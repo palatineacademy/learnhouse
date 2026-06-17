@@ -354,6 +354,28 @@ async def connect_to_db(app: FastAPI):
         # Create all tables
         if not is_testing:
             await conn.run_sync(SQLModel.metadata.create_all)
+        # Analytics events table (not a SQLModel — raw PostgreSQL for performance)
+        try:
+            from sqlalchemy import text as sa_text
+            await conn.execute(sa_text("""
+                CREATE TABLE IF NOT EXISTS analytics_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    event_name TEXT NOT NULL,
+                    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    org_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL DEFAULT 0,
+                    session_id TEXT NOT NULL DEFAULT '',
+                    properties JSONB NOT NULL DEFAULT '{}',
+                    source TEXT NOT NULL DEFAULT 'api',
+                    ip TEXT NOT NULL DEFAULT ''
+                )
+            """))
+            await conn.execute(sa_text("CREATE INDEX IF NOT EXISTS idx_ae_org_ts ON analytics_events (org_id, timestamp DESC)"))
+            await conn.execute(sa_text("CREATE INDEX IF NOT EXISTS idx_ae_org_event_ts ON analytics_events (org_id, event_name, timestamp DESC)"))
+            await conn.execute(sa_text("CREATE INDEX IF NOT EXISTS idx_ae_ts ON analytics_events (timestamp DESC)"))
+            await conn.execute(sa_text("CREATE INDEX IF NOT EXISTS idx_ae_properties ON analytics_events USING GIN (properties)"))
+        except Exception as e:
+            logging.warning("Failed to create analytics_events table: %s", e)
     app.db_engine = engine  # type: ignore
     logging.info("LearnHouse database has been started.")
 

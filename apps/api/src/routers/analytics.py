@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import select
-from config.config import get_learnhouse_config
 from sqlmodel.ext.asyncio.session import AsyncSession
 from src.core.events.database import get_db_session
 from src.db.users import PublicUser, AnonymousUser, APITokenUser, User
@@ -20,7 +19,9 @@ from src.security.auth import get_current_user, resolve_acting_user_id
 from src.security.superadmin import is_user_superadmin
 from src.security.features_utils.plan_check import get_org_plan
 from src.security.features_utils.plans import plan_meets_requirement
-import httpx
+import math
+from decimal import Decimal
+from sqlalchemy import text
 from src.services.analytics.analytics import track
 from src.services.analytics.cache import get_cached_result, set_cached_result
 from src.services.analytics.events import ALLOWED_FRONTEND_EVENTS
@@ -57,32 +58,29 @@ class AnalyticsStatusResponse(BaseModel):
     configured: bool
 
 
-# Lazy singleton httpx client for Tinybird Query API
-_read_client: httpx.AsyncClient | None = None
-
-
-def _get_read_client() -> httpx.AsyncClient | None:
-    global _read_client
-    if _read_client is not None:
-        return _read_client
-
-    config = get_learnhouse_config()
-    tb = config.tinybird_config
-    if tb is None:
-        return None
-
-    _read_client = httpx.AsyncClient(
-        base_url=tb.api_url,
-        headers={"Authorization": f"Bearer {tb.read_token}"},
-        timeout=30.0,
-    )
-    return _read_client
-
-
 # -------------------------------------------------------------------
-# Shared Tinybird query execution with Redis caching
+# Shared PostgreSQL query execution with Redis caching
 # -------------------------------------------------------------------
-async def _execute_tinybird_query(
+def _serialize_rows(rows: list[dict]) -> list[dict]:
+    """Convert PostgreSQL types (datetime, Decimal) to JSON-serializable forms."""
+    from datetime import date, datetime
+    out = []
+    for row in rows:
+        new_row = {}
+        for k, v in row.items():
+            if isinstance(v, (datetime, date)):
+                new_row[k] = v.isoformat()
+            elif isinstance(v, Decimal):
+                new_row[k] = float(v)
+            elif isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                new_row[k] = None
+            else:
+                new_row[k] = v
+        out.append(new_row)
+    return out
+
+
+async def _execute_pg_query(
     query_name: str,
     sql: str,
     org_id: int,
@@ -90,67 +88,25 @@ async def _execute_tinybird_query(
     course_id: str | None = None,
     empty_response: dict | None = None,
 ) -> dict:
-    """
-    Execute a SQL query via Tinybird Query API with Redis caching.
-
-    1. Check Redis cache for a previous result.
-    2. On miss, POST SQL to Tinybird /v0/sql.
-    3. Cache the response on success.
-    4. Return the JSON result dict.
-    """
+    """Execute a SQL query against PostgreSQL with Redis caching."""
     if empty_response is None:
         empty_response = {"data": [], "rows": 0, "meta": []}
 
-    # --- cache check ---
     cached = get_cached_result(query_name, org_id, days, course_id)
     if cached is not None:
         return cached
 
-    # --- Tinybird SQL API call ---
-    client = _get_read_client()
-    if client is None:
-        raise HTTPException(status_code=503, detail="Analytics not configured")
-
     try:
-        resp = await client.post("/v0/sql", content=sql + " FORMAT JSON")
-        resp.raise_for_status()
-        result = resp.json()
-    except httpx.HTTPStatusError as exc:
-        error_msg = exc.response.text[:500]
-        logger.warning(
-            "Tinybird query '%s' failed (%s): %s",
-            query_name, exc.response.status_code, error_msg,
-        )
-        if any(s in error_msg for s in ("UNKNOWN_TABLE", "doesn't exist", "not found")):
-            return empty_response
-        raise HTTPException(status_code=502, detail="Analytics query failed")
-    except (httpx.TimeoutException, httpx.TransportError) as exc:
-        logger.warning(
-            "Tinybird query '%s' unavailable (transient): %s", query_name, str(exc)[:500]
-        )
-        raise HTTPException(status_code=503, detail="Analytics temporarily unavailable")
+        from src.core.events.database import engine
+        async with engine.connect() as conn:
+            result = await conn.execute(text(sql))
+            rows = _serialize_rows([dict(row._mapping) for row in result])
     except Exception as exc:
-        logger.warning("Tinybird query '%s' failed: %s", query_name, str(exc)[:500])
+        logger.warning("Analytics query '%s' failed: %s", query_name, str(exc)[:500])
         raise HTTPException(status_code=502, detail="Analytics query failed")
 
-    # Tinybird returns {"data": [...], "rows": N, "meta": [...]} — same shape as frontend expects.
-    # Safety net: sanitize NaN/Inf values in the response
-    rows = result.get("data", [])
-    for row in rows:
-        for key, val in row.items():
-            if isinstance(val, float) and (val != val or val == float('inf') or val == float('-inf')):
-                logger.debug("Query '%s' returned NaN/Inf for key '%s', converting to None", query_name, key)
-                row[key] = None
-
-    response = {
-        "data": rows,
-        "rows": result.get("rows", len(rows)),
-        "meta": result.get("meta", []),
-    }
-
-    # --- cache store ---
+    response = {"data": rows, "rows": len(rows), "meta": []}
     set_cached_result(query_name, org_id, days, response, course_id)
-
     return response
 
 
@@ -318,8 +274,7 @@ async def analytics_status(
     if isinstance(current_user, AnonymousUser):
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    config = get_learnhouse_config()
-    return AnalyticsStatusResponse(configured=config.tinybird_config is not None)
+    return AnalyticsStatusResponse(configured=True)
 
 
 # -------------------------------------------------------------------
@@ -424,7 +379,7 @@ async def query_dashboard_detail(
 
     sql = _build_sql(sql_template, safe_org_id, safe_days)
 
-    ch_result = await _execute_tinybird_query(
+    ch_result = await _execute_pg_query(
         query_name, sql, safe_org_id, safe_days,
         empty_response={"data": [], "users": {}},
     )
@@ -506,7 +461,7 @@ async def query_dashboard(
 
     sql = _build_sql(sql_template, safe_org_id, safe_days)
 
-    result = await _execute_tinybird_query(query_name, sql, safe_org_id, safe_days)
+    result = await _execute_pg_query(query_name, sql, safe_org_id, safe_days)
     result["data"] = await _enrich_with_metadata(result.get("data", []), db_session)
     return result
 
@@ -675,7 +630,7 @@ async def query_course_dashboard_detail(
 
     sql = _build_sql(sql_template, safe_org_id, safe_days, safe_course_uuid)
 
-    ch_result = await _execute_tinybird_query(
+    ch_result = await _execute_pg_query(
         query_name, sql, safe_org_id, safe_days,
         course_id=safe_course_uuid,
         empty_response={"data": [], "users": {}},
@@ -779,7 +734,7 @@ async def query_course_dashboard(
 
     sql = _build_sql(sql_template, safe_org_id, safe_days, safe_course_uuid)
 
-    result = await _execute_tinybird_query(
+    result = await _execute_pg_query(
         query_name, sql, safe_org_id, safe_days,
         course_id=safe_course_uuid,
     )
@@ -850,7 +805,7 @@ async def export_analytics(
         sql_template, default_days = allowed[qname]
         d = safe_days if safe_days else default_days
         sql = _build_sql(sql_template, safe_org_id, d, safe_course_uuid)
-        result = await _execute_tinybird_query(qname, sql, safe_org_id, d, course_id=safe_course_uuid)
+        result = await _execute_pg_query(qname, sql, safe_org_id, d, course_id=safe_course_uuid)
         result["data"] = await _enrich_with_metadata(result.get("data", []), db_session)
         results[qname] = result
 

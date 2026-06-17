@@ -1,8 +1,8 @@
 """
-SQL queries for Tinybird analytics dashboard.
+SQL queries for analytics dashboard — PostgreSQL backend.
 
-Parameters use Python .format() placeholders: {org_id}, {days}.
-The org_id filter uses (0 = 0 OR org_id = 0) pattern for multi-org support:
+Parameters use Python .format() placeholders: {org_id}, {days}, {course_uuid}.
+The org_id filter uses the (0 = 0 OR org_id = N) pattern:
   - org_id=0 → returns all orgs
   - org_id=N → filters to org N
 """
@@ -14,23 +14,23 @@ The org_id filter uses (0 = 0 OR org_id = 0) pattern for multi-org support:
 LIVE_USERS = """
 SELECT
     org_id,
-    uniqExact(user_id) AS live_users
-FROM events
+    COUNT(DISTINCT user_id) AS live_users
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND timestamp >= now() - INTERVAL 5 MINUTE
+    AND timestamp >= NOW() - INTERVAL '5 minutes'
 GROUP BY org_id
 """
 
 DAILY_ACTIVE_USERS = """
 SELECT
     org_id,
-    toDate(timestamp) AS date,
-    uniqExact(user_id) AS dau
-FROM events
+    timestamp::date AS date,
+    COUNT(DISTINCT user_id) AS dau
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY org_id, date
 ORDER BY date ASC
 """
@@ -38,15 +38,15 @@ ORDER BY date ASC
 TOP_COURSES = """
 SELECT
     org_id,
-    JSONExtractString(properties, 'course_uuid') AS course_uuid,
-    uniqExactIf(user_id, event_name = 'course_view') AS views,
-    uniqExactIf(user_id, event_name = 'course_enrolled') AS enrollments,
-    uniqExactIf(user_id, event_name = 'course_completed') AS completions
-FROM events
+    properties->>'course_uuid' AS course_uuid,
+    COUNT(DISTINCT CASE WHEN event_name = 'course_view' THEN user_id END) AS views,
+    COUNT(DISTINCT CASE WHEN event_name = 'course_enrolled' THEN user_id END) AS enrollments,
+    COUNT(DISTINCT CASE WHEN event_name = 'course_completed' THEN user_id END) AS completions
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
     AND event_name IN ('course_view', 'course_enrolled', 'course_completed')
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY org_id, course_uuid
 ORDER BY views DESC
 LIMIT 20
@@ -57,20 +57,20 @@ WITH user_events AS (
     SELECT
         org_id,
         user_id,
-        groupUniqArrayIf(event_name, event_name IN ('page_view', 'course_view', 'course_enrolled', 'course_completed')) AS events_set
-    FROM events
+        array_agg(DISTINCT event_name) FILTER (WHERE event_name IN ('page_view', 'course_view', 'course_enrolled', 'course_completed')) AS events_set
+    FROM analytics_events
     WHERE
         ({org_id} = 0 OR org_id = {org_id})
         AND event_name IN ('page_view', 'course_view', 'course_enrolled', 'course_completed')
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
     GROUP BY org_id, user_id
 )
 SELECT
     org_id,
-    countIf(has(events_set, 'page_view')) AS page_views,
-    countIf(has(events_set, 'course_view')) AS course_views,
-    countIf(has(events_set, 'course_enrolled')) AS enrollments,
-    countIf(has(events_set, 'course_completed')) AS completions
+    COUNT(CASE WHEN 'page_view' = ANY(events_set) THEN 1 END) AS page_views,
+    COUNT(CASE WHEN 'course_view' = ANY(events_set) THEN 1 END) AS course_views,
+    COUNT(CASE WHEN 'course_enrolled' = ANY(events_set) THEN 1 END) AS enrollments,
+    COUNT(CASE WHEN 'course_completed' = ANY(events_set) THEN 1 END) AS completions
 FROM user_events
 GROUP BY org_id
 """
@@ -79,12 +79,12 @@ EVENT_COUNTS = """
 SELECT
     org_id,
     event_name,
-    count() AS total,
-    uniqExact(user_id) AS unique_users
-FROM events
+    COUNT(*) AS total,
+    COUNT(DISTINCT user_id) AS unique_users
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY org_id, event_name
 ORDER BY total DESC
 """
@@ -92,15 +92,15 @@ ORDER BY total DESC
 VISITORS_BY_COUNTRY = """
 SELECT
     org_id,
-    JSONExtractString(properties, 'country_code') AS country_code,
-    count() AS visits,
-    uniqExact(user_id) AS unique_users
-FROM events
+    properties->>'country_code' AS country_code,
+    COUNT(*) AS visits,
+    COUNT(DISTINCT user_id) AS unique_users
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
     AND event_name = 'page_view'
-    AND JSONExtractString(properties, 'country_code') != ''
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND properties->>'country_code' IS NOT NULL AND properties->>'country_code' != ''
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY org_id, country_code
 ORDER BY visits DESC
 LIMIT 20
@@ -109,15 +109,15 @@ LIMIT 20
 VISITORS_BY_DEVICE = """
 SELECT
     org_id,
-    JSONExtractString(properties, 'device_type') AS device_type,
-    count() AS visits,
-    uniqExact(user_id) AS unique_users
-FROM events
+    properties->>'device_type' AS device_type,
+    COUNT(*) AS visits,
+    COUNT(DISTINCT user_id) AS unique_users
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
     AND event_name = 'page_view'
-    AND JSONExtractString(properties, 'device_type') != ''
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND properties->>'device_type' IS NOT NULL AND properties->>'device_type' != ''
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY org_id, device_type
 ORDER BY visits DESC
 """
@@ -125,15 +125,15 @@ ORDER BY visits DESC
 VISITORS_BY_REFERRER = """
 SELECT
     org_id,
-    JSONExtractString(properties, 'referrer_domain') AS referrer_domain,
-    count() AS visits,
-    uniqExact(user_id) AS unique_users
-FROM events
+    properties->>'referrer_domain' AS referrer_domain,
+    COUNT(*) AS visits,
+    COUNT(DISTINCT user_id) AS unique_users
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
     AND event_name = 'page_view'
-    AND JSONExtractString(properties, 'referrer_domain') != ''
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND properties->>'referrer_domain' IS NOT NULL AND properties->>'referrer_domain' != ''
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY org_id, referrer_domain
 ORDER BY visits DESC
 LIMIT 20
@@ -142,18 +142,16 @@ LIMIT 20
 DAILY_VISITOR_BREAKDOWN = """
 SELECT
     org_id,
-    toDate(timestamp) AS date,
-    uniqExact(user_id) AS dau,
-    countIf(JSONExtractString(properties, 'device_type') = 'desktop') AS desktop,
-    countIf(JSONExtractString(properties, 'device_type') = 'mobile') AS mobile,
-    countIf(JSONExtractString(properties, 'device_type') = 'tablet') AS tablet,
-    topK(3)(JSONExtractString(properties, 'country_code')) AS top_countries,
-    topK(1)(JSONExtractString(properties, 'referrer_domain')) AS top_referrer
-FROM events
+    timestamp::date AS date,
+    COUNT(DISTINCT user_id) AS dau,
+    COUNT(CASE WHEN properties->>'device_type' = 'desktop' THEN 1 END) AS desktop,
+    COUNT(CASE WHEN properties->>'device_type' = 'mobile' THEN 1 END) AS mobile,
+    COUNT(CASE WHEN properties->>'device_type' = 'tablet' THEN 1 END) AS tablet
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
     AND event_name = 'page_view'
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY org_id, date
 ORDER BY date ASC
 """
@@ -161,23 +159,23 @@ ORDER BY date ASC
 ACTIVITY_ENGAGEMENT = """
 SELECT
     org_id,
-    JSONExtractString(properties, 'activity_uuid') AS activity_uuid,
-    anyIf(JSONExtractString(properties, 'activity_type'), JSONExtractString(properties, 'activity_type') != '') AS activity_type,
-    anyIf(JSONExtractString(properties, 'course_uuid'), JSONExtractString(properties, 'course_uuid') != '') AS course_uuid,
-    uniqExactIf(user_id, event_name = 'activity_view') AS views,
-    uniqExactIf(user_id, event_name = 'activity_completed') AS completions,
-    if(countIf(event_name = 'time_on_activity' AND JSONExtractFloat(properties, 'seconds_spent') > 0) > 0,
-       avgIf(
-           JSONExtractFloat(properties, 'seconds_spent'),
-           event_name = 'time_on_activity' AND JSONExtractFloat(properties, 'seconds_spent') > 0
-               AND JSONExtractFloat(properties, 'seconds_spent') <= 14400
-       ),
-       0) AS avg_seconds_spent
-FROM events
+    properties->>'activity_uuid' AS activity_uuid,
+    MAX(CASE WHEN properties->>'activity_type' IS NOT NULL AND properties->>'activity_type' != '' THEN properties->>'activity_type' END) AS activity_type,
+    MAX(CASE WHEN properties->>'course_uuid' IS NOT NULL AND properties->>'course_uuid' != '' THEN properties->>'course_uuid' END) AS course_uuid,
+    COUNT(DISTINCT CASE WHEN event_name = 'activity_view' THEN user_id END) AS views,
+    COUNT(DISTINCT CASE WHEN event_name = 'activity_completed' THEN user_id END) AS completions,
+    CASE WHEN COUNT(CASE WHEN event_name = 'time_on_activity' AND (properties->>'seconds_spent')::float > 0 THEN 1 END) > 0
+        THEN AVG(CASE WHEN event_name = 'time_on_activity'
+                      AND (properties->>'seconds_spent')::float > 0
+                      AND (properties->>'seconds_spent')::float <= 14400
+                 THEN (properties->>'seconds_spent')::float END)
+        ELSE 0
+    END AS avg_seconds_spent
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
     AND event_name IN ('activity_view', 'activity_completed', 'time_on_activity')
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY org_id, activity_uuid
 ORDER BY views DESC
 LIMIT 50
@@ -189,36 +187,37 @@ LIMIT 50
 
 COURSE_DROPOFF = """
 WITH enrolled AS (
-    SELECT DISTINCT org_id, user_id, JSONExtractString(properties, 'course_uuid') AS course_uuid
-    FROM events
+    SELECT DISTINCT org_id, user_id, properties->>'course_uuid' AS course_uuid
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id}) AND event_name = 'course_enrolled'
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
 ),
 completed AS (
-    SELECT DISTINCT org_id, user_id, JSONExtractString(properties, 'course_uuid') AS course_uuid
-    FROM events
+    SELECT DISTINCT org_id, user_id, properties->>'course_uuid' AS course_uuid
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id}) AND event_name = 'course_completed'
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
 ),
 last_activity AS (
     SELECT
         org_id,
         user_id,
-        JSONExtractString(properties, 'course_uuid') AS course_uuid,
-        argMax(JSONExtractString(properties, 'activity_uuid'), timestamp) AS last_activity_uuid
-    FROM events
+        properties->>'course_uuid' AS course_uuid,
+        (array_agg(properties->>'activity_uuid' ORDER BY timestamp DESC))[1] AS last_activity_uuid
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id}) AND event_name = 'activity_completed'
-        AND timestamp >= now() - INTERVAL {days} DAY
-    GROUP BY org_id, user_id, course_uuid
+        AND timestamp >= NOW() - INTERVAL '{days} days'
+    GROUP BY org_id, user_id, properties->>'course_uuid'
 )
 SELECT
     la.org_id,
     la.course_uuid,
     la.last_activity_uuid,
-    count() AS dropoff_count
+    COUNT(*) AS dropoff_count
 FROM enrolled e
-LEFT ANTI JOIN completed c ON e.user_id = c.user_id AND e.course_uuid = c.course_uuid AND e.org_id = c.org_id
+LEFT JOIN completed c ON e.user_id = c.user_id AND e.course_uuid = c.course_uuid AND e.org_id = c.org_id
 INNER JOIN last_activity la ON e.user_id = la.user_id AND e.course_uuid = la.course_uuid AND e.org_id = la.org_id
+WHERE c.user_id IS NULL
 GROUP BY la.org_id, la.course_uuid, la.last_activity_uuid
 ORDER BY dropoff_count DESC
 """
@@ -228,28 +227,28 @@ WITH signups AS (
     SELECT
         org_id,
         user_id,
-        toStartOfWeek(timestamp) AS cohort_week
-    FROM events
+        date_trunc('week', timestamp)::date AS cohort_week
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id}) AND event_name = 'user_signed_up'
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
 ),
 activity AS (
     SELECT DISTINCT
         org_id,
         user_id,
-        toStartOfWeek(timestamp) AS active_week
-    FROM events
+        date_trunc('week', timestamp)::date AS active_week
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id})
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
 )
 SELECT
     s.org_id,
     s.cohort_week,
-    count(DISTINCT s.user_id) AS cohort_size,
-    uniqExactIf(s.user_id, dateDiff('week', s.cohort_week, a.active_week) = 1) AS week_1,
-    uniqExactIf(s.user_id, dateDiff('week', s.cohort_week, a.active_week) = 2) AS week_2,
-    uniqExactIf(s.user_id, dateDiff('week', s.cohort_week, a.active_week) = 4) AS week_4,
-    uniqExactIf(s.user_id, dateDiff('week', s.cohort_week, a.active_week) = 8) AS week_8
+    COUNT(DISTINCT s.user_id) AS cohort_size,
+    COUNT(DISTINCT CASE WHEN (a.active_week - s.cohort_week) / 7 = 1 THEN s.user_id END) AS week_1,
+    COUNT(DISTINCT CASE WHEN (a.active_week - s.cohort_week) / 7 = 2 THEN s.user_id END) AS week_2,
+    COUNT(DISTINCT CASE WHEN (a.active_week - s.cohort_week) / 7 = 4 THEN s.user_id END) AS week_4,
+    COUNT(DISTINCT CASE WHEN (a.active_week - s.cohort_week) / 7 = 8 THEN s.user_id END) AS week_8
 FROM signups s
 LEFT JOIN activity a ON s.user_id = a.user_id AND s.org_id = a.org_id
     AND a.active_week >= s.cohort_week
@@ -262,29 +261,29 @@ WITH enrollments AS (
     SELECT
         org_id,
         user_id,
-        JSONExtractString(properties, 'course_uuid') AS course_uuid,
-        min(timestamp) AS enrolled_at
-    FROM events
+        properties->>'course_uuid' AS course_uuid,
+        MIN(timestamp) AS enrolled_at
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id}) AND event_name = 'course_enrolled'
-        AND timestamp >= now() - INTERVAL {days} DAY
-    GROUP BY org_id, user_id, course_uuid
+        AND timestamp >= NOW() - INTERVAL '{days} days'
+    GROUP BY org_id, user_id, properties->>'course_uuid'
 ),
 completions AS (
     SELECT
         org_id,
         user_id,
-        JSONExtractString(properties, 'course_uuid') AS course_uuid,
-        min(timestamp) AS completed_at
-    FROM events
+        properties->>'course_uuid' AS course_uuid,
+        MIN(timestamp) AS completed_at
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id}) AND event_name = 'course_completed'
-        AND timestamp >= now() - INTERVAL {days} DAY
-    GROUP BY org_id, user_id, course_uuid
+        AND timestamp >= NOW() - INTERVAL '{days} days'
+    GROUP BY org_id, user_id, properties->>'course_uuid'
 )
 SELECT
     e.org_id,
     e.course_uuid,
-    median(dateDiff('day', e.enrolled_at, c.completed_at)) AS median_days,
-    count() AS completions_count
+    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY (c.completed_at::date - e.enrolled_at::date)) AS median_days,
+    COUNT(*) AS completions_count
 FROM enrollments e
 INNER JOIN completions c ON e.user_id = c.user_id AND e.course_uuid = c.course_uuid AND e.org_id = c.org_id
 WHERE c.completed_at >= e.enrolled_at
@@ -295,13 +294,13 @@ ORDER BY median_days ASC
 PEAK_USAGE_HOURS = """
 SELECT
     org_id,
-    toDayOfWeek(timestamp) AS day_of_week,
-    toHour(timestamp) AS hour_of_day,
-    count() AS event_count
-FROM events
+    EXTRACT(DOW FROM timestamp)::int AS day_of_week,
+    EXTRACT(HOUR FROM timestamp)::int AS hour_of_day,
+    COUNT(*) AS event_count
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY org_id, day_of_week, hour_of_day
 ORDER BY day_of_week, hour_of_day
 """
@@ -310,29 +309,32 @@ CONTENT_TYPE_EFFECTIVENESS = """
 WITH views AS (
     SELECT
         org_id,
-        JSONExtractString(properties, 'activity_type') AS activity_type,
-        uniqExact(user_id) AS view_count
-    FROM events
+        properties->>'activity_type' AS activity_type,
+        COUNT(DISTINCT user_id) AS view_count
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id}) AND event_name = 'activity_view'
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
     GROUP BY org_id, activity_type
 ),
 completions AS (
     SELECT
         org_id,
-        JSONExtractString(properties, 'activity_type') AS activity_type,
-        uniqExact(user_id) AS completion_count
-    FROM events
+        properties->>'activity_type' AS activity_type,
+        COUNT(DISTINCT user_id) AS completion_count
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id}) AND event_name = 'activity_completed'
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
     GROUP BY org_id, activity_type
 )
 SELECT
     v.org_id,
     v.activity_type,
     v.view_count,
-    coalesce(c.completion_count, 0) AS completion_count,
-    if(v.view_count > 0, round(coalesce(c.completion_count, 0) / v.view_count * 100, 1), 0) AS completion_rate
+    COALESCE(c.completion_count, 0) AS completion_count,
+    CASE WHEN v.view_count > 0
+        THEN ROUND(COALESCE(c.completion_count, 0)::numeric / v.view_count * 100, 1)
+        ELSE 0
+    END AS completion_rate
 FROM views v
 LEFT JOIN completions c ON v.activity_type = c.activity_type AND v.org_id = c.org_id
 ORDER BY completion_rate DESC
@@ -340,27 +342,27 @@ ORDER BY completion_rate DESC
 
 NEW_VS_RETURNING = """
 WITH daily_users AS (
-    SELECT DISTINCT org_id, user_id, toDate(timestamp) AS date
-    FROM events
+    SELECT DISTINCT org_id, user_id, timestamp::date AS date
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id})
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
 ),
 first_seen_in_window AS (
-    SELECT org_id, user_id, min(date) AS first_date
+    SELECT org_id, user_id, MIN(date) AS first_date
     FROM daily_users
     GROUP BY org_id, user_id
 ),
 ever_seen_before AS (
     SELECT DISTINCT org_id, user_id
-    FROM events
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id})
-        AND timestamp < now() - INTERVAL {days} DAY
+        AND timestamp < NOW() - INTERVAL '{days} days'
 )
 SELECT
     d.org_id,
     d.date,
-    countIf(d.date = f.first_date AND e.user_id IS NULL) AS new_users,
-    countIf(d.date > f.first_date OR e.user_id IS NOT NULL) AS returning_users
+    COUNT(CASE WHEN d.date = f.first_date AND e.user_id IS NULL THEN 1 END) AS new_users,
+    COUNT(CASE WHEN d.date > f.first_date OR e.user_id IS NOT NULL THEN 1 END) AS returning_users
 FROM daily_users d
 INNER JOIN first_seen_in_window f ON d.user_id = f.user_id AND d.org_id = f.org_id
 LEFT JOIN ever_seen_before e ON d.user_id = e.user_id AND d.org_id = e.org_id
@@ -373,24 +375,28 @@ WITH ordered AS (
     SELECT
         org_id,
         user_id,
-        JSONExtractString(properties, 'course_uuid') AS course_uuid,
+        properties->>'course_uuid' AS course_uuid,
         timestamp,
-        lagInFrame(timestamp) OVER (
-            PARTITION BY org_id, user_id, JSONExtractString(properties, 'course_uuid')
+        LAG(timestamp) OVER (
+            PARTITION BY org_id, user_id, properties->>'course_uuid'
             ORDER BY timestamp
         ) AS prev_ts
-    FROM events
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id}) AND event_name = 'activity_completed'
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
 )
 SELECT
     org_id,
     course_uuid,
-    if(count() > 0, round(avg(dateDiff('hour', prev_ts, timestamp)), 1), 0) AS avg_hours_between,
-    count() AS transitions
+    CASE WHEN COUNT(*) > 0
+        THEN ROUND(AVG(EXTRACT(EPOCH FROM (timestamp - prev_ts)) / 3600)::numeric, 1)
+        ELSE 0
+    END AS avg_hours_between,
+    COUNT(*) AS transitions
 FROM ordered
-WHERE prev_ts > toDateTime('2020-01-01 00:00:00')
-    AND dateDiff('hour', prev_ts, timestamp) > 0
+WHERE prev_ts IS NOT NULL
+    AND prev_ts > '2020-01-01 00:00:00'::timestamp
+    AND EXTRACT(EPOCH FROM (timestamp - prev_ts)) / 3600 > 0
 GROUP BY org_id, course_uuid
 ORDER BY avg_hours_between ASC
 """
@@ -398,28 +404,31 @@ ORDER BY avg_hours_between ASC
 COMMUNITY_CORRELATION = """
 WITH discussors AS (
     SELECT DISTINCT org_id, user_id
-    FROM events
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id}) AND event_name = 'discussion_posted'
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
 ),
 enrolled AS (
     SELECT DISTINCT org_id, user_id
-    FROM events
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id}) AND event_name = 'course_enrolled'
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
 ),
 completed AS (
     SELECT DISTINCT org_id, user_id
-    FROM events
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id}) AND event_name = 'course_completed'
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
 )
 SELECT
     e.org_id,
     'discussors' AS group_name,
-    count(DISTINCT e.user_id) AS enrolled_count,
-    count(DISTINCT c.user_id) AS completed_count,
-    if(enrolled_count > 0, round(completed_count / enrolled_count * 100, 1), 0) AS completion_rate
+    COUNT(DISTINCT e.user_id) AS enrolled_count,
+    COUNT(DISTINCT c.user_id) AS completed_count,
+    CASE WHEN COUNT(DISTINCT e.user_id) > 0
+        THEN ROUND(COUNT(DISTINCT c.user_id)::numeric / COUNT(DISTINCT e.user_id) * 100, 1)
+        ELSE 0
+    END AS completion_rate
 FROM enrolled e
 INNER JOIN discussors d ON e.user_id = d.user_id AND e.org_id = d.org_id
 LEFT JOIN completed c ON e.user_id = c.user_id AND e.org_id = c.org_id
@@ -428,12 +437,16 @@ UNION ALL
 SELECT
     e.org_id,
     'non_discussors' AS group_name,
-    count(DISTINCT e.user_id) AS enrolled_count,
-    count(DISTINCT c.user_id) AS completed_count,
-    if(enrolled_count > 0, round(completed_count / enrolled_count * 100, 1), 0) AS completion_rate
+    COUNT(DISTINCT e.user_id) AS enrolled_count,
+    COUNT(DISTINCT c.user_id) AS completed_count,
+    CASE WHEN COUNT(DISTINCT e.user_id) > 0
+        THEN ROUND(COUNT(DISTINCT c.user_id)::numeric / COUNT(DISTINCT e.user_id) * 100, 1)
+        ELSE 0
+    END AS completion_rate
 FROM enrolled e
-LEFT ANTI JOIN discussors d ON e.user_id = d.user_id AND e.org_id = d.org_id
+LEFT JOIN discussors d ON e.user_id = d.user_id AND e.org_id = d.org_id
 LEFT JOIN completed c ON e.user_id = c.user_id AND e.org_id = c.org_id
+WHERE d.user_id IS NULL
 GROUP BY e.org_id
 """
 
@@ -441,39 +454,39 @@ USER_PROGRESS_SNAPSHOT = """
 WITH total_activities AS (
     SELECT
         org_id,
-        JSONExtractString(properties, 'course_uuid') AS course_uuid,
-        uniqExact(JSONExtractString(properties, 'activity_uuid')) AS total_count
-    FROM events
+        properties->>'course_uuid' AS course_uuid,
+        COUNT(DISTINCT properties->>'activity_uuid') AS total_count
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id})
         AND event_name IN ('activity_view', 'activity_completed')
-        AND JSONExtractString(properties, 'activity_uuid') != ''
-        AND timestamp >= now() - INTERVAL {days} DAY
-    GROUP BY org_id, course_uuid
+        AND properties->>'activity_uuid' IS NOT NULL AND properties->>'activity_uuid' != ''
+        AND timestamp >= NOW() - INTERVAL '{days} days'
+    GROUP BY org_id, properties->>'course_uuid'
 ),
 user_activities AS (
     SELECT
         org_id,
         user_id,
-        JSONExtractString(properties, 'course_uuid') AS course_uuid,
-        uniqExactIf(JSONExtractString(properties, 'activity_uuid'), event_name = 'activity_completed') AS completed_activities
-    FROM events
+        properties->>'course_uuid' AS course_uuid,
+        COUNT(DISTINCT CASE WHEN event_name = 'activity_completed' THEN properties->>'activity_uuid' END) AS completed_activities
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id})
         AND event_name IN ('course_enrolled', 'activity_completed')
-        AND timestamp >= now() - INTERVAL {days} DAY
-    GROUP BY org_id, user_id, course_uuid
+        AND timestamp >= NOW() - INTERVAL '{days} days'
+    GROUP BY org_id, user_id, properties->>'course_uuid'
 )
 SELECT
     ua.org_id,
     ua.course_uuid,
-    multiIf(
-        ta.total_count IS NULL OR ta.total_count = 0, '0%',
-        ua.completed_activities = 0, '0%',
-        (ua.completed_activities / ta.total_count) <= 0.25, '1-25%',
-        (ua.completed_activities / ta.total_count) <= 0.50, '26-50%',
-        (ua.completed_activities / ta.total_count) <= 0.75, '51-75%',
-        '76-100%'
-    ) AS bracket,
-    count() AS user_count
+    CASE
+        WHEN ta.total_count IS NULL OR ta.total_count = 0 THEN '0%'
+        WHEN ua.completed_activities = 0 THEN '0%'
+        WHEN (ua.completed_activities::float / ta.total_count) <= 0.25 THEN '1-25%'
+        WHEN (ua.completed_activities::float / ta.total_count) <= 0.50 THEN '26-50%'
+        WHEN (ua.completed_activities::float / ta.total_count) <= 0.75 THEN '51-75%'
+        ELSE '76-100%'
+    END AS bracket,
+    COUNT(*) AS user_count
 FROM user_activities ua
 LEFT JOIN total_activities ta ON ua.course_uuid = ta.course_uuid AND ua.org_id = ta.org_id
 GROUP BY ua.org_id, ua.course_uuid, bracket
@@ -483,15 +496,18 @@ ORDER BY ua.course_uuid, bracket
 SEARCH_EFFECTIVENESS = """
 SELECT
     org_id,
-    JSONExtractString(properties, 'query') AS query,
-    count() AS search_count,
-    countIf(JSONExtractInt(properties, 'results_count') = 0) AS zero_results,
-    if(search_count > 0, round(zero_results / search_count * 100, 1), 0) AS zero_result_rate
-FROM events
+    properties->>'query' AS query,
+    COUNT(*) AS search_count,
+    COUNT(CASE WHEN properties->>'results_count' = '0' THEN 1 END) AS zero_results,
+    CASE WHEN COUNT(*) > 0
+        THEN ROUND(COUNT(CASE WHEN properties->>'results_count' = '0' THEN 1 END)::numeric / COUNT(*) * 100, 1)
+        ELSE 0
+    END AS zero_result_rate
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
     AND event_name = 'search_query'
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY org_id, query
 ORDER BY search_count DESC
 LIMIT 50
@@ -501,29 +517,32 @@ CERTIFICATION_RATE = """
 WITH completers AS (
     SELECT
         org_id,
-        JSONExtractString(properties, 'course_uuid') AS course_uuid,
-        count(DISTINCT user_id) AS completions
-    FROM events
+        properties->>'course_uuid' AS course_uuid,
+        COUNT(DISTINCT user_id) AS completions
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id}) AND event_name = 'course_completed'
-        AND timestamp >= now() - INTERVAL {days} DAY
-    GROUP BY org_id, course_uuid
+        AND timestamp >= NOW() - INTERVAL '{days} days'
+    GROUP BY org_id, properties->>'course_uuid'
 ),
 cert_claims AS (
     SELECT
         org_id,
-        JSONExtractString(properties, 'course_uuid') AS course_uuid,
-        count(DISTINCT user_id) AS claims
-    FROM events
+        properties->>'course_uuid' AS course_uuid,
+        COUNT(DISTINCT user_id) AS claims
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id}) AND event_name = 'certificate_claimed'
-        AND timestamp >= now() - INTERVAL {days} DAY
-    GROUP BY org_id, course_uuid
+        AND timestamp >= NOW() - INTERVAL '{days} days'
+    GROUP BY org_id, properties->>'course_uuid'
 )
 SELECT
     c.org_id,
     c.course_uuid,
     c.completions,
-    coalesce(cc.claims, 0) AS claims,
-    if(c.completions > 0, round(coalesce(cc.claims, 0) / c.completions * 100, 1), 0) AS claim_rate
+    COALESCE(cc.claims, 0) AS claims,
+    CASE WHEN c.completions > 0
+        THEN ROUND(COALESCE(cc.claims, 0)::numeric / c.completions * 100, 1)
+        ELSE 0
+    END AS claim_rate
 FROM completers c
 LEFT JOIN cert_claims cc ON c.course_uuid = cc.course_uuid AND c.org_id = cc.org_id
 ORDER BY c.completions DESC
@@ -532,14 +551,14 @@ ORDER BY c.completions DESC
 ORG_GROWTH_TREND = """
 SELECT
     org_id,
-    toStartOfWeek(timestamp) AS week,
-    uniqExactIf(user_id, event_name = 'user_signed_up') AS signups,
-    uniqExactIf(user_id, event_name = 'course_enrolled') AS enrollments,
-    uniqExactIf(user_id, event_name = 'course_completed') AS completions
-FROM events
+    date_trunc('week', timestamp) AS week,
+    COUNT(DISTINCT CASE WHEN event_name = 'user_signed_up' THEN user_id END) AS signups,
+    COUNT(DISTINCT CASE WHEN event_name = 'course_enrolled' THEN user_id END) AS enrollments,
+    COUNT(DISTINCT CASE WHEN event_name = 'course_completed' THEN user_id END) AS completions
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
     AND event_name IN ('user_signed_up', 'course_enrolled', 'course_completed')
 GROUP BY org_id, week
 ORDER BY week ASC
@@ -549,23 +568,25 @@ LEARNER_ENGAGEMENT_SCORE = """
 SELECT
     org_id,
     user_id,
-    uniqExactIf(JSONExtractString(properties, 'path'), event_name = 'page_view') AS page_views,
-    uniqExactIf(JSONExtractString(properties, 'activity_uuid'), event_name = 'activity_completed') AS activities_completed,
-    uniqExactIf(JSONExtractString(properties, 'course_uuid'), event_name = 'course_completed') AS courses_completed,
-    sumIf(least(JSONExtractFloat(properties, 'seconds_spent'), 14400), event_name = 'time_on_activity') AS total_time_spent,
-    least(
+    COUNT(DISTINCT CASE WHEN event_name = 'page_view' THEN properties->>'path' END) AS page_views,
+    COUNT(DISTINCT CASE WHEN event_name = 'activity_completed' THEN properties->>'activity_uuid' END) AS activities_completed,
+    COUNT(DISTINCT CASE WHEN event_name = 'course_completed' THEN properties->>'course_uuid' END) AS courses_completed,
+    COALESCE(SUM(CASE WHEN event_name = 'time_on_activity' AND (properties->>'seconds_spent')::float > 0
+                 THEN LEAST((properties->>'seconds_spent')::float, 14400) END), 0) AS total_time_spent,
+    LEAST(
         (
-            least(uniqExactIf(JSONExtractString(properties, 'path'), event_name = 'page_view'), 50) * 1
-            + least(uniqExactIf(JSONExtractString(properties, 'activity_uuid'), event_name = 'activity_completed'), 100) * 10
-            + least(uniqExactIf(JSONExtractString(properties, 'course_uuid'), event_name = 'course_completed'), 20) * 50
-            + least(sumIf(least(JSONExtractFloat(properties, 'seconds_spent'), 14400), event_name = 'time_on_activity') / 3600, 100) * 5
+            LEAST(COUNT(DISTINCT CASE WHEN event_name = 'page_view' THEN properties->>'path' END), 50) * 1
+            + LEAST(COUNT(DISTINCT CASE WHEN event_name = 'activity_completed' THEN properties->>'activity_uuid' END), 100) * 10
+            + LEAST(COUNT(DISTINCT CASE WHEN event_name = 'course_completed' THEN properties->>'course_uuid' END), 20) * 50
+            + LEAST(COALESCE(SUM(CASE WHEN event_name = 'time_on_activity' AND (properties->>'seconds_spent')::float > 0
+                                 THEN LEAST((properties->>'seconds_spent')::float, 14400) END), 0) / 3600, 100) * 5
         ),
         2500
     ) AS engagement_score
-FROM events
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
     AND user_id != 0
 GROUP BY org_id, user_id
 ORDER BY engagement_score DESC
@@ -576,15 +597,15 @@ COURSE_RATING_BY_COMPLETION = """
 WITH course_stats AS (
     SELECT
         org_id,
-        JSONExtractString(properties, 'course_uuid') AS course_uuid,
-        uniqExactIf(user_id, event_name = 'course_enrolled') AS enrollments,
-        uniqExactIf(user_id, event_name = 'course_completed') AS completions,
-        uniqExactIf(JSONExtractString(properties, 'activity_uuid'), event_name = 'activity_view') AS activity_count
-    FROM events
+        properties->>'course_uuid' AS course_uuid,
+        COUNT(DISTINCT CASE WHEN event_name = 'course_enrolled' THEN user_id END) AS enrollments,
+        COUNT(DISTINCT CASE WHEN event_name = 'course_completed' THEN user_id END) AS completions,
+        COUNT(DISTINCT CASE WHEN event_name = 'activity_view' THEN properties->>'activity_uuid' END) AS activity_count
+    FROM analytics_events
     WHERE ({org_id} = 0 OR org_id = {org_id})
         AND event_name IN ('course_enrolled', 'course_completed', 'activity_view')
-        AND timestamp >= now() - INTERVAL {days} DAY
-    GROUP BY org_id, course_uuid
+        AND timestamp >= NOW() - INTERVAL '{days} days'
+    GROUP BY org_id, properties->>'course_uuid'
 )
 SELECT
     org_id,
@@ -592,28 +613,31 @@ SELECT
     enrollments,
     completions,
     activity_count,
-    if(enrollments > 0, round(completions / enrollments * 100, 1), 0) AS completion_rate
+    CASE WHEN enrollments > 0
+        THEN ROUND(completions::numeric / enrollments * 100, 1)
+        ELSE 0
+    END AS completion_rate
 FROM course_stats
 WHERE enrollments >= 5
 ORDER BY enrollments DESC
 """
 
 # ---------------------------------------------------------------------------
-# Detail queries (stat-card drill-down, return individual rows for enrichment)
+# Detail queries (stat-card drill-down)
 # ---------------------------------------------------------------------------
 
 DETAIL_LIVE_USERS = """
 SELECT
     user_id,
-    anyLast(JSONExtractString(properties, 'path')) AS path,
-    anyLast(JSONExtractString(properties, 'device_type')) AS device_type,
-    anyLast(JSONExtractString(properties, 'country_code')) AS country_code,
-    max(timestamp) AS last_seen
-FROM events
+    (array_agg(properties->>'path' ORDER BY timestamp DESC))[1] AS path,
+    (array_agg(properties->>'device_type' ORDER BY timestamp DESC))[1] AS device_type,
+    (array_agg(properties->>'country_code' ORDER BY timestamp DESC))[1] AS country_code,
+    MAX(timestamp) AS last_seen
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
     AND event_name = 'page_view'
-    AND timestamp >= now() - INTERVAL 5 MINUTE
+    AND timestamp >= NOW() - INTERVAL '5 minutes'
     AND user_id != 0
 GROUP BY user_id
 ORDER BY last_seen DESC
@@ -623,13 +647,13 @@ LIMIT 200
 DETAIL_SIGNUPS = """
 SELECT
     user_id,
-    JSONExtractString(properties, 'signup_method') AS signup_method,
+    properties->>'signup_method' AS signup_method,
     timestamp
-FROM events
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
     AND event_name = 'user_signed_up'
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
     AND user_id != 0
 ORDER BY timestamp DESC
 LIMIT 200
@@ -638,15 +662,15 @@ LIMIT 200
 DETAIL_ENROLLMENTS = """
 SELECT
     user_id,
-    JSONExtractString(properties, 'course_uuid') AS course_uuid,
-    min(timestamp) AS enrolled_at
-FROM events
+    properties->>'course_uuid' AS course_uuid,
+    MIN(timestamp) AS enrolled_at
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
     AND event_name = 'course_enrolled'
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
     AND user_id != 0
-GROUP BY user_id, course_uuid
+GROUP BY user_id, properties->>'course_uuid'
 ORDER BY enrolled_at DESC
 LIMIT 200
 """
@@ -654,13 +678,13 @@ LIMIT 200
 DETAIL_COMPLETIONS = """
 SELECT
     user_id,
-    JSONExtractString(properties, 'course_uuid') AS course_uuid,
+    properties->>'course_uuid' AS course_uuid,
     timestamp
-FROM events
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
     AND event_name = 'course_completed'
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
     AND user_id != 0
 ORDER BY timestamp DESC
 LIMIT 200
@@ -675,7 +699,7 @@ DETAIL_QUERIES: dict[str, tuple[str, int]] = {
 }
 
 # ---------------------------------------------------------------------------
-# Registry — maps query names to (sql_template, default_days)
+# Registry
 # ---------------------------------------------------------------------------
 
 CORE_QUERIES: dict[str, tuple[str, int]] = {
@@ -708,53 +732,59 @@ ADVANCED_QUERIES: dict[str, tuple[str, int]] = {
 }
 
 # ---------------------------------------------------------------------------
-# Course-level queries (Pro only — filtered by course_uuid)
+# Course-level queries
 # ---------------------------------------------------------------------------
 
 COURSE_OVERVIEW_STATS = """
 SELECT
-    uniqExactIf(user_id, event_name = 'course_view') AS views,
-    uniqExactIf(user_id, event_name = 'course_enrolled') AS enrollments,
-    uniqExactIf(user_id, event_name = 'course_completed') AS completions,
-    if(uniqExactIf(user_id, event_name = 'course_enrolled') > 0,
-       round(uniqExactIf(user_id, event_name = 'course_completed') / uniqExactIf(user_id, event_name = 'course_enrolled') * 100, 1),
-       0) AS completion_rate
-FROM events
+    COUNT(DISTINCT CASE WHEN event_name = 'course_view' THEN user_id END) AS views,
+    COUNT(DISTINCT CASE WHEN event_name = 'course_enrolled' THEN user_id END) AS enrollments,
+    COUNT(DISTINCT CASE WHEN event_name = 'course_completed' THEN user_id END) AS completions,
+    CASE WHEN COUNT(DISTINCT CASE WHEN event_name = 'course_enrolled' THEN user_id END) > 0
+        THEN ROUND(
+            COUNT(DISTINCT CASE WHEN event_name = 'course_completed' THEN user_id END)::numeric /
+            COUNT(DISTINCT CASE WHEN event_name = 'course_enrolled' THEN user_id END) * 100, 1)
+        ELSE 0
+    END AS completion_rate
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+    AND properties->>'course_uuid' = '{course_uuid}'
     AND event_name IN ('course_view', 'course_enrolled', 'course_completed')
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 """
 
 COURSE_ENROLLMENT_TREND = """
 SELECT
-    toDate(timestamp) AS date,
-    uniqExact(user_id) AS enrollments
-FROM events
+    timestamp::date AS date,
+    COUNT(DISTINCT user_id) AS enrollments
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+    AND properties->>'course_uuid' = '{course_uuid}'
     AND event_name = 'course_enrolled'
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY date
 ORDER BY date ASC
 """
 
 COURSE_ACTIVITY_FUNNEL = """
 SELECT
-    JSONExtractString(properties, 'activity_uuid') AS activity_uuid,
-    uniqExactIf(user_id, event_name = 'activity_view') AS views,
-    uniqExactIf(user_id, event_name = 'activity_completed') AS completions,
-    if(uniqExactIf(user_id, event_name = 'activity_view') > 0,
-       round(uniqExactIf(user_id, event_name = 'activity_completed') / uniqExactIf(user_id, event_name = 'activity_view') * 100, 1),
-       0) AS completion_rate
-FROM events
+    properties->>'activity_uuid' AS activity_uuid,
+    COUNT(DISTINCT CASE WHEN event_name = 'activity_view' THEN user_id END) AS views,
+    COUNT(DISTINCT CASE WHEN event_name = 'activity_completed' THEN user_id END) AS completions,
+    CASE WHEN COUNT(DISTINCT CASE WHEN event_name = 'activity_view' THEN user_id END) > 0
+        THEN ROUND(
+            COUNT(DISTINCT CASE WHEN event_name = 'activity_completed' THEN user_id END)::numeric /
+            COUNT(DISTINCT CASE WHEN event_name = 'activity_view' THEN user_id END) * 100, 1)
+        ELSE 0
+    END AS completion_rate
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+    AND properties->>'course_uuid' = '{course_uuid}'
     AND event_name IN ('activity_view', 'activity_completed')
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY activity_uuid
 ORDER BY views DESC
 """
@@ -763,24 +793,24 @@ COURSE_LEARNER_PROGRESS = """
 WITH user_completions AS (
     SELECT
         user_id,
-        uniqExact(JSONExtractString(properties, 'activity_uuid')) AS completed_activities
-    FROM events
+        COUNT(DISTINCT properties->>'activity_uuid') AS completed_activities
+    FROM analytics_events
     WHERE
         ({org_id} = 0 OR org_id = {org_id})
-        AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+        AND properties->>'course_uuid' = '{course_uuid}'
         AND event_name = 'activity_completed'
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
     GROUP BY user_id
 )
 SELECT
-    multiIf(
-        completed_activities = 0, '0',
-        completed_activities <= 2, '1-2',
-        completed_activities <= 5, '3-5',
-        completed_activities <= 10, '6-10',
-        '11+'
-    ) AS bracket,
-    count() AS user_count
+    CASE
+        WHEN completed_activities = 0 THEN '0'
+        WHEN completed_activities <= 2 THEN '1-2'
+        WHEN completed_activities <= 5 THEN '3-5'
+        WHEN completed_activities <= 10 THEN '6-10'
+        ELSE '11+'
+    END AS bracket,
+    COUNT(*) AS user_count
 FROM user_completions
 GROUP BY bracket
 ORDER BY bracket
@@ -788,18 +818,19 @@ ORDER BY bracket
 
 COURSE_TIME_PER_ACTIVITY = """
 SELECT
-    JSONExtractString(properties, 'activity_uuid') AS activity_uuid,
-    if(count() > 0,
-       round(avg(least(JSONExtractFloat(properties, 'seconds_spent'), 14400)), 1),
-       0) AS avg_seconds_spent,
-    count() AS samples
-FROM events
+    properties->>'activity_uuid' AS activity_uuid,
+    CASE WHEN COUNT(*) > 0
+        THEN ROUND(AVG(LEAST((properties->>'seconds_spent')::float, 14400))::numeric, 1)
+        ELSE 0
+    END AS avg_seconds_spent,
+    COUNT(*) AS samples
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+    AND properties->>'course_uuid' = '{course_uuid}'
     AND event_name = 'time_on_activity'
-    AND JSONExtractFloat(properties, 'seconds_spent') > 0
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND (properties->>'seconds_spent')::float > 0
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY activity_uuid
 ORDER BY avg_seconds_spent DESC
 """
@@ -809,34 +840,38 @@ WITH ordered AS (
     SELECT
         user_id,
         timestamp,
-        lagInFrame(timestamp) OVER (
+        LAG(timestamp) OVER (
             PARTITION BY user_id
             ORDER BY timestamp
         ) AS prev_ts
-    FROM events
+    FROM analytics_events
     WHERE
         ({org_id} = 0 OR org_id = {org_id})
-        AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+        AND properties->>'course_uuid' = '{course_uuid}'
         AND event_name = 'activity_completed'
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
 )
 SELECT
-    if(count() > 0, round(avg(dateDiff('hour', prev_ts, timestamp)), 1), 0) AS avg_hours_between,
-    count() AS transitions
+    CASE WHEN COUNT(*) > 0
+        THEN ROUND(AVG(EXTRACT(EPOCH FROM (timestamp - prev_ts)) / 3600)::numeric, 1)
+        ELSE 0
+    END AS avg_hours_between,
+    COUNT(*) AS transitions
 FROM ordered
-WHERE prev_ts > toDateTime('2020-01-01 00:00:00')
-    AND dateDiff('hour', prev_ts, timestamp) > 0
+WHERE prev_ts IS NOT NULL
+    AND prev_ts > '2020-01-01 00:00:00'::timestamp
+    AND EXTRACT(EPOCH FROM (timestamp - prev_ts)) / 3600 > 0
 """
 
 COURSE_ACTIVE_LEARNERS = """
 SELECT
-    toDate(timestamp) AS date,
-    uniqExact(user_id) AS active_learners
-FROM events
+    timestamp::date AS date,
+    COUNT(DISTINCT user_id) AS active_learners
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND properties->>'course_uuid' = '{course_uuid}'
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY date
 ORDER BY date ASC
 """
@@ -845,32 +880,32 @@ COURSE_TIME_TO_COMPLETION = """
 WITH enrollments AS (
     SELECT
         user_id,
-        min(timestamp) AS enrolled_at
-    FROM events
+        MIN(timestamp) AS enrolled_at
+    FROM analytics_events
     WHERE
         ({org_id} = 0 OR org_id = {org_id})
-        AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+        AND properties->>'course_uuid' = '{course_uuid}'
         AND event_name = 'course_enrolled'
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
     GROUP BY user_id
 ),
 completions AS (
     SELECT
         user_id,
-        min(timestamp) AS completed_at
-    FROM events
+        MIN(timestamp) AS completed_at
+    FROM analytics_events
     WHERE
         ({org_id} = 0 OR org_id = {org_id})
-        AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+        AND properties->>'course_uuid' = '{course_uuid}'
         AND event_name = 'course_completed'
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
     GROUP BY user_id
 )
 SELECT
-    median(dateDiff('day', e.enrolled_at, c.completed_at)) AS median_days,
-    count() AS completions_count,
-    quantile(0.25)(dateDiff('day', e.enrolled_at, c.completed_at)) AS p25_days,
-    quantile(0.75)(dateDiff('day', e.enrolled_at, c.completed_at)) AS p75_days
+    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY (c.completed_at::date - e.enrolled_at::date)) AS median_days,
+    COUNT(*) AS completions_count,
+    PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY (c.completed_at::date - e.enrolled_at::date)) AS p25_days,
+    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY (c.completed_at::date - e.enrolled_at::date)) AS p75_days
 FROM enrollments e
 INNER JOIN completions c ON e.user_id = c.user_id
 WHERE c.completed_at >= e.enrolled_at
@@ -878,82 +913,87 @@ WHERE c.completed_at >= e.enrolled_at
 
 COURSE_CERTIFICATION_RATE = """
 WITH completers AS (
-    SELECT count(DISTINCT user_id) AS completions
-    FROM events
+    SELECT COUNT(DISTINCT user_id) AS completions
+    FROM analytics_events
     WHERE
         ({org_id} = 0 OR org_id = {org_id})
-        AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+        AND properties->>'course_uuid' = '{course_uuid}'
         AND event_name = 'course_completed'
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
 ),
 cert_claims AS (
-    SELECT count(DISTINCT user_id) AS claims
-    FROM events
+    SELECT COUNT(DISTINCT user_id) AS claims
+    FROM analytics_events
     WHERE
         ({org_id} = 0 OR org_id = {org_id})
-        AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+        AND properties->>'course_uuid' = '{course_uuid}'
         AND event_name = 'certificate_claimed'
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
 )
 SELECT
     completers.completions,
     cert_claims.claims,
-    if(completers.completions > 0, round(cert_claims.claims / completers.completions * 100, 1), 0) AS claim_rate
+    CASE WHEN completers.completions > 0
+        THEN ROUND(cert_claims.claims::numeric / completers.completions * 100, 1)
+        ELSE 0
+    END AS claim_rate
 FROM completers, cert_claims
 """
 
-# ---------------------------------------------------------------------------
-# Course-level queries — batch 2 (10 additional visuals)
-# ---------------------------------------------------------------------------
-
 COURSE_VIEW_TO_ENROLLMENT = """
 SELECT
-    toDate(timestamp) AS date,
-    uniqExactIf(user_id, event_name = 'course_view') AS views,
-    uniqExactIf(user_id, event_name = 'course_enrolled') AS enrollments,
-    if(uniqExactIf(user_id, event_name = 'course_view') > 0,
-       round(uniqExactIf(user_id, event_name = 'course_enrolled') / uniqExactIf(user_id, event_name = 'course_view') * 100, 1),
-       0) AS conversion_rate
-FROM events
+    timestamp::date AS date,
+    COUNT(DISTINCT CASE WHEN event_name = 'course_view' THEN user_id END) AS views,
+    COUNT(DISTINCT CASE WHEN event_name = 'course_enrolled' THEN user_id END) AS enrollments,
+    CASE WHEN COUNT(DISTINCT CASE WHEN event_name = 'course_view' THEN user_id END) > 0
+        THEN ROUND(
+            COUNT(DISTINCT CASE WHEN event_name = 'course_enrolled' THEN user_id END)::numeric /
+            COUNT(DISTINCT CASE WHEN event_name = 'course_view' THEN user_id END) * 100, 1)
+        ELSE 0
+    END AS conversion_rate
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+    AND properties->>'course_uuid' = '{course_uuid}'
     AND event_name IN ('course_view', 'course_enrolled')
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY date
 ORDER BY date ASC
 """
 
 COURSE_ACTIVITY_TYPE_BREAKDOWN = """
 SELECT
-    JSONExtractString(properties, 'activity_type') AS activity_type,
-    uniqExactIf(user_id, event_name = 'activity_view') AS views,
-    uniqExactIf(user_id, event_name = 'activity_completed') AS completions,
-    if(uniqExactIf(user_id, event_name = 'activity_view') > 0,
-       round(uniqExactIf(user_id, event_name = 'activity_completed') / uniqExactIf(user_id, event_name = 'activity_view') * 100, 1),
-       0) AS completion_rate
-FROM events
+    properties->>'activity_type' AS activity_type,
+    COUNT(DISTINCT CASE WHEN event_name = 'activity_view' THEN user_id END) AS views,
+    COUNT(DISTINCT CASE WHEN event_name = 'activity_completed' THEN user_id END) AS completions,
+    CASE WHEN COUNT(DISTINCT CASE WHEN event_name = 'activity_view' THEN user_id END) > 0
+        THEN ROUND(
+            COUNT(DISTINCT CASE WHEN event_name = 'activity_completed' THEN user_id END)::numeric /
+            COUNT(DISTINCT CASE WHEN event_name = 'activity_view' THEN user_id END) * 100, 1)
+        ELSE 0
+    END AS completion_rate
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+    AND properties->>'course_uuid' = '{course_uuid}'
     AND event_name IN ('activity_view', 'activity_completed')
-    AND JSONExtractString(properties, 'activity_type') != ''
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND properties->>'activity_type' IS NOT NULL AND properties->>'activity_type' != ''
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY activity_type
 ORDER BY views DESC
 """
 
 COURSE_PEAK_HOURS = """
 SELECT
-    toHour(timestamp) AS hour,
-    toDayOfWeek(timestamp) AS day_of_week,
-    count() AS event_count
-FROM events
+    EXTRACT(HOUR FROM timestamp)::int AS hour,
+    EXTRACT(DOW FROM timestamp)::int AS day_of_week,
+    COUNT(*) AS event_count
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+    AND properties->>'course_uuid' = '{course_uuid}'
     AND event_name IN ('activity_view', 'activity_completed', 'time_on_activity')
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY hour, day_of_week
 ORDER BY day_of_week, hour
 """
@@ -962,34 +1002,34 @@ COURSE_LEARNER_RETENTION = """
 WITH first_activity AS (
     SELECT
         user_id,
-        min(toDate(timestamp)) AS first_day
-    FROM events
+        MIN(timestamp::date) AS first_day
+    FROM analytics_events
     WHERE
         ({org_id} = 0 OR org_id = {org_id})
-        AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+        AND properties->>'course_uuid' = '{course_uuid}'
         AND event_name IN ('activity_view', 'activity_completed')
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
     GROUP BY user_id
 ),
 daily_activity AS (
     SELECT DISTINCT
         user_id,
-        toDate(timestamp) AS active_day
-    FROM events
+        timestamp::date AS active_day
+    FROM analytics_events
     WHERE
         ({org_id} = 0 OR org_id = {org_id})
-        AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+        AND properties->>'course_uuid' = '{course_uuid}'
         AND event_name IN ('activity_view', 'activity_completed')
-        AND timestamp >= now() - INTERVAL {days} DAY
+        AND timestamp >= NOW() - INTERVAL '{days} days'
 )
 SELECT
-    dateDiff('day', f.first_day, d.active_day) AS days_since_start,
-    uniqExact(d.user_id) AS active_users,
-    (SELECT uniqExact(user_id) FROM first_activity) AS cohort_size
+    (d.active_day - f.first_day) AS days_since_start,
+    COUNT(DISTINCT d.user_id) AS active_users,
+    (SELECT COUNT(DISTINCT user_id) FROM first_activity) AS cohort_size
 FROM first_activity f
 INNER JOIN daily_activity d ON f.user_id = d.user_id
-WHERE dateDiff('day', f.first_day, d.active_day) >= 0
-    AND dateDiff('day', f.first_day, d.active_day) <= 30
+WHERE (d.active_day - f.first_day) >= 0
+    AND (d.active_day - f.first_day) <= 30
 GROUP BY days_since_start
 ORDER BY days_since_start
 """
@@ -997,25 +1037,16 @@ ORDER BY days_since_start
 COURSE_TOP_LEARNERS = """
 SELECT
     user_id,
-    uniqExactIf(
-        JSONExtractString(properties, 'activity_uuid'),
-        event_name = 'activity_completed'
-    ) AS completions,
-    uniqExactIf(
-        JSONExtractString(properties, 'activity_uuid'),
-        event_name = 'activity_view'
-    ) AS views,
-    if(countIf(event_name = 'time_on_activity' AND JSONExtractFloat(properties, 'seconds_spent') > 0) > 0,
-       sumIf(
-           least(JSONExtractFloat(properties, 'seconds_spent'), 14400),
-           event_name = 'time_on_activity' AND JSONExtractFloat(properties, 'seconds_spent') > 0
-       ), 0) AS total_seconds_spent
-FROM events
+    COUNT(DISTINCT CASE WHEN event_name = 'activity_completed' THEN properties->>'activity_uuid' END) AS completions,
+    COUNT(DISTINCT CASE WHEN event_name = 'activity_view' THEN properties->>'activity_uuid' END) AS views,
+    COALESCE(SUM(CASE WHEN event_name = 'time_on_activity' AND (properties->>'seconds_spent')::float > 0
+                 THEN LEAST((properties->>'seconds_spent')::float, 14400) END), 0) AS total_seconds_spent
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+    AND properties->>'course_uuid' = '{course_uuid}'
     AND event_name IN ('activity_completed', 'activity_view', 'time_on_activity')
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
     AND user_id != 0
 GROUP BY user_id
 ORDER BY completions DESC, views DESC
@@ -1026,29 +1057,28 @@ COURSE_ACTIVITY_DROPOFF = """
 WITH user_activities AS (
     SELECT
         user_id,
-        JSONExtractString(properties, 'activity_uuid') AS activity_uuid,
-        min(timestamp) AS first_completed_at
-    FROM events
+        properties->>'activity_uuid' AS activity_uuid,
+        MIN(timestamp) AS first_completed_at
+    FROM analytics_events
     WHERE
         ({org_id} = 0 OR org_id = {org_id})
-        AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+        AND properties->>'course_uuid' = '{course_uuid}'
         AND event_name = 'activity_completed'
-        AND timestamp >= now() - INTERVAL {days} DAY
-    GROUP BY user_id, activity_uuid
+        AND timestamp >= NOW() - INTERVAL '{days} days'
+    GROUP BY user_id, properties->>'activity_uuid'
 ),
 user_max_activity AS (
     SELECT
         user_id,
-        max(first_completed_at) AS last_activity_at,
-        argMax(activity_uuid, first_completed_at) AS last_activity_uuid,
-        count() AS total_completed
+        (array_agg(activity_uuid ORDER BY first_completed_at DESC))[1] AS last_activity_uuid,
+        COUNT(*) AS total_completed
     FROM user_activities
     GROUP BY user_id
 )
 SELECT
     last_activity_uuid AS activity_uuid,
-    count() AS users_stopped_here,
-    if(count() > 0, avg(total_completed), 0) AS avg_completed_before_stop
+    COUNT(*) AS users_stopped_here,
+    CASE WHEN COUNT(*) > 0 THEN AVG(total_completed) ELSE 0 END AS avg_completed_before_stop
 FROM user_max_activity
 GROUP BY last_activity_uuid
 ORDER BY users_stopped_here DESC
@@ -1057,86 +1087,88 @@ LIMIT 20
 
 COURSE_ENGAGEMENT_BY_TYPE = """
 SELECT
-    JSONExtractString(properties, 'activity_type') AS activity_type,
-    uniqExact(user_id) AS unique_learners,
-    count() AS total_events,
-    uniqExactIf(user_id, event_name = 'activity_completed') AS completions,
-    if(countIf(event_name = 'time_on_activity' AND JSONExtractFloat(properties, 'seconds_spent') > 0) > 0,
-       avgIf(
-           JSONExtractFloat(properties, 'seconds_spent'),
-           event_name = 'time_on_activity' AND JSONExtractFloat(properties, 'seconds_spent') > 0
-               AND JSONExtractFloat(properties, 'seconds_spent') <= 14400
-       ),
-       0) AS avg_seconds_spent
-FROM events
+    properties->>'activity_type' AS activity_type,
+    COUNT(DISTINCT user_id) AS unique_learners,
+    COUNT(*) AS total_events,
+    COUNT(DISTINCT CASE WHEN event_name = 'activity_completed' THEN user_id END) AS completions,
+    CASE WHEN COUNT(CASE WHEN event_name = 'time_on_activity' AND (properties->>'seconds_spent')::float > 0 THEN 1 END) > 0
+        THEN AVG(CASE WHEN event_name = 'time_on_activity'
+                      AND (properties->>'seconds_spent')::float > 0
+                      AND (properties->>'seconds_spent')::float <= 14400
+                 THEN (properties->>'seconds_spent')::float END)
+        ELSE 0
+    END AS avg_seconds_spent
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+    AND properties->>'course_uuid' = '{course_uuid}'
     AND event_name IN ('activity_view', 'activity_completed', 'time_on_activity')
-    AND JSONExtractString(properties, 'activity_type') != ''
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND properties->>'activity_type' IS NOT NULL AND properties->>'activity_type' != ''
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY activity_type
 ORDER BY total_events DESC
 """
 
 COURSE_DAILY_COMPLETIONS = """
 SELECT
-    toDate(timestamp) AS date,
-    count() AS completions,
-    uniqExact(user_id) AS unique_completers
-FROM events
+    timestamp::date AS date,
+    COUNT(*) AS completions,
+    COUNT(DISTINCT user_id) AS unique_completers
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+    AND properties->>'course_uuid' = '{course_uuid}'
     AND event_name = 'activity_completed'
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY date
 ORDER BY date ASC
 """
 
 COURSE_AVG_SESSION_DURATION = """
 SELECT
-    toDate(timestamp) AS date,
-    round(sum(least(JSONExtractFloat(properties, 'seconds_spent'), 14400)) / greatest(uniqExact(user_id), 1), 0) AS avg_seconds_per_user,
-    sum(least(JSONExtractFloat(properties, 'seconds_spent'), 14400)) AS total_seconds,
-    uniqExact(user_id) AS unique_users
-FROM events
+    timestamp::date AS date,
+    ROUND(
+        SUM(LEAST((properties->>'seconds_spent')::float, 14400)) /
+        GREATEST(COUNT(DISTINCT user_id), 1), 0
+    ) AS avg_seconds_per_user,
+    SUM(LEAST((properties->>'seconds_spent')::float, 14400)) AS total_seconds,
+    COUNT(DISTINCT user_id) AS unique_users
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+    AND properties->>'course_uuid' = '{course_uuid}'
     AND event_name = 'time_on_activity'
-    AND JSONExtractFloat(properties, 'seconds_spent') > 0
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND (properties->>'seconds_spent')::float > 0
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY date
 ORDER BY date ASC
 """
 
 COURSE_UNIQUE_VIEWERS = """
 SELECT
-    toDate(timestamp) AS date,
-    uniqExact(user_id) AS unique_viewers,
-    count() AS total_views
-FROM events
+    timestamp::date AS date,
+    COUNT(DISTINCT user_id) AS unique_viewers,
+    COUNT(*) AS total_views
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+    AND properties->>'course_uuid' = '{course_uuid}'
     AND event_name = 'course_view'
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
 GROUP BY date
 ORDER BY date ASC
 """
 
-# Course-level detail queries (return individual rows for PostgreSQL enrichment)
 COURSE_RECENT_ENROLLMENTS = """
 SELECT
     user_id,
-    min(timestamp) AS enrolled_at
-FROM events
+    MIN(timestamp) AS enrolled_at
+FROM analytics_events
 WHERE
     ({org_id} = 0 OR org_id = {org_id})
-    AND JSONExtractString(properties, 'course_uuid') = '{course_uuid}'
+    AND properties->>'course_uuid' = '{course_uuid}'
     AND event_name = 'course_enrolled'
-    AND timestamp >= now() - INTERVAL {days} DAY
+    AND timestamp >= NOW() - INTERVAL '{days} days'
     AND user_id != 0
 GROUP BY user_id
 ORDER BY enrolled_at DESC
