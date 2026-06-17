@@ -636,6 +636,23 @@ describe('command success paths', () => {
     await expect(healthCommand()).resolves.toBeUndefined()
   })
 
+  it('doctor and health walk the green path when containers report healthy', async () => {
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockImplementation(((cmd: string) => {
+      if (cmd.includes('docker ps')) return Buffer.from(
+        'learnhouse-app-dep1\tUp 2 hours\tghcr.io/learnhouse/app:1.4.2\n' +
+        'learnhouse-db-dep1\tUp 2 hours (healthy)\tpgvector/pgvector:pg16\n' +
+        'learnhouse-redis-dep1\tUp 2 hours\tredis:7-alpine\n')
+      if (cmd.includes('State.Running')) return Buffer.from('true')
+      if (cmd.includes('RestartCount')) return Buffer.from('0')
+      if (cmd.includes('{{.Image}}')) return Buffer.from('sha256:abcdef0123456789')
+      if (cmd.includes('docker logs')) return Buffer.from('INFO: all good\n')
+      return Buffer.from('')
+    }) as never)
+    await expect(healthCommand()).resolves.toBeUndefined()
+    await expect(doctorCommand()).resolves.toBeUndefined()
+  })
+
   it('deployments "view" lists deployments and returns', async () => {
     H.q.select.push('view')
     await expect(deploymentsCommand()).resolves.toBeUndefined()
