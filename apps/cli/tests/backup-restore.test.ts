@@ -131,6 +131,18 @@ describe('backup / restore — real tar, stubbed database', () => {
     await expect(backupCommand()).rejects.toBeInstanceOf(ProcessExit)
   })
 
+  it('restore exits when no deployment id can be resolved', async () => {
+    fs.writeFileSync(path.join(installDir, 'learnhouse.config.json'), JSON.stringify({
+      version: '1.4.8', createdAt: '2026-01-01T00:00:00Z', // no deploymentId
+      installDir, domain: 'localhost', httpPort: 8080,
+      useHttps: false, autoSsl: false, useExternalDb: false, orgSlug: 'default',
+    }))
+    dockerMock.autoDetectDeploymentId.mockReturnValue(null)
+    const dummy = path.join(installDir, 'dummy.tar.gz')
+    fs.writeFileSync(dummy, 'x')
+    await expect(restoreCommand(dummy)).rejects.toBeInstanceOf(ProcessExit)
+  })
+
   it('backup and restore refuse an external database', async () => {
     fs.writeFileSync(path.join(installDir, 'learnhouse.config.json'), JSON.stringify({
       version: '1.4.8', deploymentId: 'dep1', createdAt: '2026-01-01T00:00:00Z',
