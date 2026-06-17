@@ -236,6 +236,14 @@ describe('checkDevEnv', () => {
     // No env files at all → everything missing → prompt → (stub cancels) → false
     expect(await checkDevEnv(root)).toBe(false)
   })
+
+  it('writes dev defaults for the missing vars when the user opts in', async () => {
+    H.q.select.push('defaults') // choose "apply dev defaults and continue"
+    expect(await checkDevEnv(root)).toBe(true)
+    expect(fs.existsSync(path.join(root, 'apps/api/.env'))).toBe(true)
+    expect(fs.readFileSync(path.join(root, 'apps/api/.env'), 'utf-8'))
+      .toContain('LEARNHOUSE_AUTH_JWT_SECRET_KEY=')
+  })
 })
 
 // ─── Interactive command flows (driven via scripted prompts) ────
@@ -468,6 +476,23 @@ describe('setup input prompts', () => {
       emailEnabled: true, emailProvider: 'resend',
       resendApiKey: 're_key', systemEmailAddress: 'noreply@test.dev',
     })
+  })
+
+  it('promptDatabase external path verifies a reachable connection string', async () => {
+    const net = await import('node:net')
+    const server = net.createServer()
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
+    const port = (server.address() as { port: number }).port
+    try {
+      H.q.select.push('external', 'local') // db external, redis local
+      H.q.text.push(`postgresql://u:p@127.0.0.1:${port}/lh`)
+      const cfg = await promptDatabase()
+      expect(cfg.useExternalDb).toBe(true)
+      expect(cfg.externalDbConnectionString).toContain(`127.0.0.1:${port}`)
+      expect(cfg.useExternalRedis).toBe(false)
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()))
+    }
   })
 
   it('promptDatabase local path generates a password and honours the AI image choice', async () => {
