@@ -2291,6 +2291,17 @@ describe('docker.ts command builders', () => {
     expect(cmd()).toBe('docker compose up -d')
   })
 
+  it('dockerComposeUpRetry retries after a transient failure', () => {
+    // The first `up` fails; the helper calls onRetry, waits the 15s backoff
+    // (a real blocking sleep — hence the long timeout), then succeeds.
+    let n = 0
+    execSync.mockImplementation(() => { n++; if (n === 1) throw new Error('dependency is unhealthy'); return Buffer.from('') })
+    const onRetry = vi.fn()
+    dockerComposeUpRetry('/srv/lh', 2, onRetry)
+    expect(onRetry).toHaveBeenCalledWith(1)
+    expect(n).toBe(2) // first attempt failed, second succeeded
+  }, 30_000)
+
   it('dockerExec / getContainerLogs / getDockerDiskUsage build their commands', () => {
     dockerExec('learnhouse-app-x', 'env')
     expect(cmd()).toBe('docker exec learnhouse-app-x env')

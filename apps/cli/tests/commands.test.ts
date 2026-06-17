@@ -1424,6 +1424,20 @@ describe('docker log streamers', () => {
     expect(spawnMock.mock.calls[1][1]).toContain('learnhouse-db-dep1')
   })
 
+  it('dockerLogsMulti exits the process once every child has exited', () => {
+    const children: Array<{ exit?: () => void }> = []
+    spawnMock.mockImplementation(() => {
+      const h: { exit?: () => void } = {}
+      children.push(h)
+      return { stdout: { on: () => {} }, stderr: { on: () => {} }, on: (ev: string, cb: () => void) => { if (ev === 'exit') h.exit = cb }, kill: () => {} }
+    })
+    vi.spyOn(process, 'exit').mockImplementation(((code?: number) => { throw new ProcessExit(code ?? 0) }) as never)
+
+    dockerLogsMulti(['a', 'b'])
+    children[0].exit!()                 // first child exits → not done yet
+    expect(() => children[1].exit!()).toThrow(ProcessExit) // last child → process.exit(0)
+  })
+
   it('dockerExecInteractive runs  and records the exit code', async () => {
     const ss = (await import('node:child_process')).spawnSync as unknown as ReturnType<typeof vi.fn>
     ss.mockReturnValue({ status: 0, stdout: Buffer.from(''), stderr: Buffer.from('') })
