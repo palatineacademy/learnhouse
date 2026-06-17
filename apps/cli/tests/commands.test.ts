@@ -78,6 +78,7 @@ import { devCommand } from '../src/commands/dev.js'
 import { printBanner } from '../src/ui/banner.js'
 import { setupCommand } from '../src/commands/setup.js'
 import { checkPrerequisites } from '../src/prompts/prerequisites.js'
+import { setupEnterprise } from '../src/commands/setup-ee.js'
 
 // ─── Command guards — every entry point must bail cleanly with no install ──
 //
@@ -753,6 +754,21 @@ describe('setup / update in-process', () => {
     // The compose tag was rewritten to :latest (offline fallback).
     expect(fs.readFileSync(path.join(dir, 'docker-compose.yml'), 'utf-8'))
       .toContain('ghcr.io/learnhouse/app:latest')
+  })
+
+  it('setup --ci --edition enterprise --no-start generates the EE install', async () => {
+    await setupEnterprise({
+      ci: true, name: 'ee', license: 'lh_live_TESTKEY',
+      domain: 'learn.school.dev', adminEmail: 'admin@school.dev',
+      adminPassword: 'password123', tenancy: 'single', start: false,
+    })
+    const dir = path.join(home, '.learnhouse', 'ee')
+    expect(fs.existsSync(path.join(dir, 'docker-compose.yml'))).toBe(true)
+    expect(fs.existsSync(path.join(dir, '.env'))).toBe(true)
+    expect(fs.existsSync(path.join(dir, 'Caddyfile'))).toBe(true)
+    expect(fs.existsSync(path.join(dir, 'learnhouse.config.json'))).toBe(true)
+    const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'learnhouse.config.json'), 'utf-8'))
+    expect(cfg.edition).toBe('enterprise')
   })
 
   it('update --to <version> resolves the tag via GHCR and pins it', async () => {
