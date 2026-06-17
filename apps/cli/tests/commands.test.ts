@@ -10,27 +10,30 @@ vi.mock('node:child_process', async () => {
   return { ...actual, execSync: vi.fn(() => Buffer.from('')) }
 })
 
-// Replace both prompt modules with non-blocking stubs: logs/intro/spinner are
-// no-ops and every interactive prompt resolves to a "cancel" sentinel, so a
-// command that reaches a prompt (e.g. the menu-first `deployments`) cancels and
-// exits cleanly instead of blocking on stdin.
-const promptStub = vi.hoisted(() => {
+// Replace both prompt modules with programmable stubs: logs/intro/spinner are
+// no-ops, and each interactive prompt shifts the next scripted response off a
+// per-kind queue (falling back to a "cancel" sentinel / false when empty). This
+// lets tests drive multi-step flows headlessly instead of blocking on stdin.
+const H = vi.hoisted(() => {
   const cancel = Symbol('cancel')
+  const q: Record<string, unknown[]> = { select: [], text: [], confirm: [], multiselect: [], password: [] }
+  const pull = (k: string, fallback: unknown) => (q[k].length ? q[k].shift() : fallback)
   const noop = () => {}
-  return {
+  const mock = {
     log: { error: noop, info: noop, success: noop, warn: noop, warning: noop, message: noop, step: noop },
     intro: noop, outro: noop, cancel: noop, note: noop, group: noop,
     spinner: () => ({ start: noop, stop: noop, message: noop }),
-    select: async () => cancel,
-    multiselect: async () => cancel,
-    text: async () => cancel,
-    password: async () => cancel,
-    confirm: async () => false,
+    select: async () => pull('select', cancel),
+    multiselect: async () => pull('multiselect', cancel),
+    text: async () => pull('text', cancel),
+    password: async () => pull('password', cancel),
+    confirm: async () => pull('confirm', false),
     isCancel: (v: unknown) => v === cancel,
   }
+  return { cancel, q, mock, reset: () => { for (const k of Object.keys(q)) q[k] = [] } }
 })
-vi.mock('@clack/prompts', () => promptStub)
-vi.mock('../src/utils/prompt.js', () => promptStub)
+vi.mock('@clack/prompts', () => H.mock)
+vi.mock('../src/utils/prompt.js', () => H.mock)
 
 import { configCommand } from '../src/commands/config.js'
 import { statusCommand } from '../src/commands/status.js'
@@ -45,7 +48,14 @@ import { deploymentsCommand } from '../src/commands/deployments.js'
 import { backupCommand } from '../src/commands/backup.js'
 import { restoreCommand } from '../src/commands/restore.js'
 import { updateCommand } from '../src/commands/update.js'
+import { doctorCommand } from '../src/commands/doctor.js'
+import { promptAdmin } from '../src/prompts/admin.js'
+import { promptOrganization } from '../src/prompts/organization.js'
+import { promptDomain } from '../src/prompts/domain.js'
+import { promptFeatures } from '../src/prompts/features.js'
+import { promptDatabase } from '../src/prompts/database.js'
 import { checkDevEnv } from '../src/services/env-check.js'
+import { devCommand } from '../src/commands/dev.js'
 
 // ─── Command guards — every entry point must bail cleanly with no install ──
 //
@@ -202,5 +212,271 @@ describe('checkDevEnv', () => {
   it('returns false when required vars are missing and the fix prompt is cancelled', async () => {
     // No env files at all → everything missing → prompt → (stub cancels) → false
     expect(await checkDevEnv(root)).toBe(false)
+  })
+})
+
+// ─── Interactive command flows (driven via scripted prompts) ────
+//
+// These exercise the FULL bodies of the interactive commands — not just
+// guards — by scripting prompt responses and pointing the command at a
+// real fixture install in a temp $HOME. Docker calls hit the mocked
+// execSync, so nothing touches a daemon.
+
+describe('interactive command flows', () => {
+  let home: string
+  let installDir: string
+  let origHome: string | undefined
+  let execSyncMock: ReturnType<typeof vi.fn>
+
+  const COMPOSE = [
+    'name: learnhouse-dep1',
+    'services:',
+    '  learnhouse-app:',
+    '    image: ghcr.io/learnhouse/app:latest',
+    '    container_name: learnhouse-app-dep1',
+    '  db:',
+    '    image: pgvector/pgvector:pg16',
+    '    container_name: learnhouse-db-dep1',
+    '  redis:',
+    '    image: redis:7-alpine',
+    '    container_name: learnhouse-redis-dep1',
+    '',
+  ].join('\n')
+
+  beforeEach(async () => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-flow-'))
+    installDir = path.join(home, '.learnhouse', 'test')
+    fs.mkdirSync(installDir, { recursive: true })
+    fs.writeFileSync(path.join(installDir, 'learnhouse.config.json'), JSON.stringify({
+      version: '1.4.8', deploymentId: 'dep1', createdAt: '2026-01-01T00:00:00Z',
+      installDir, domain: 'localhost', httpPort: 8080,
+      useHttps: false, autoSsl: false, useExternalDb: false, orgSlug: 'default',
+    }))
+    fs.writeFileSync(path.join(installDir, '.env'), 'LEARNHOUSE_DOMAIN=localhost\nHTTP_PORT=8080\n')
+    fs.writeFileSync(path.join(installDir, 'docker-compose.yml'), COMPOSE)
+
+    origHome = process.env.HOME
+    process.env.HOME = home
+    H.reset()
+    vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new ProcessExit(code ?? 0)
+    }) as never)
+    execSyncMock = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    execSyncMock.mockReset()
+    execSyncMock.mockReturnValue(Buffer.from(''))
+  })
+
+  afterEach(() => {
+    if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome
+    fs.rmSync(home, { recursive: true, force: true })
+    H.reset()
+    vi.restoreAllMocks()
+  })
+
+  it('scale writes the chosen mem_limits for every service', async () => {
+    H.q.text.push('512m', '1g', '256m') // learnhouse-app, db, redis
+    H.q.confirm.push(false)             // do not restart
+
+    await scaleCommand()
+
+    const limits = parseMemLimit(path.join(installDir, 'docker-compose.yml'))
+    expect(limits.get('learnhouse-app')).toBe('512m')
+    expect(limits.get('db')).toBe('1g')
+    expect(limits.get('redis')).toBe('256m')
+  })
+
+  it('scale skips an invalid limit and leaves that service unchanged', async () => {
+    H.q.text.push('notvalid', '1g', '') // app invalid, db ok, redis empty/skip
+    H.q.confirm.push(false)
+
+    await scaleCommand()
+
+    const limits = parseMemLimit(path.join(installDir, 'docker-compose.yml'))
+    expect(limits.has('learnhouse-app')).toBe(false)
+    expect(limits.get('db')).toBe('1g')
+    expect(limits.has('redis')).toBe(false)
+  })
+
+  it('env edits a variable and persists it to .env', async () => {
+    H.q.select.push('domain', 'LEARNHOUSE_DOMAIN', '_done') // category, key, then done
+    H.q.text.push('school.example.com')
+    H.q.confirm.push(false)
+
+    await envCommand()
+
+    expect(fs.readFileSync(path.join(installDir, '.env'), 'utf-8'))
+      .toContain('LEARNHOUSE_DOMAIN=school.example.com')
+  })
+
+  it('env makes no change when the editor is dismissed immediately', async () => {
+    H.q.select.push('_done')
+    await envCommand()
+    expect(fs.readFileSync(path.join(installDir, '.env'), 'utf-8')).toContain('LEARNHOUSE_DOMAIN=localhost')
+  })
+
+  it('env appends a previously-missing variable to .env', async () => {
+    // NEXTAUTH_URL is in the domain category but absent from the fixture .env.
+    H.q.select.push('domain', 'NEXTAUTH_URL', '_done')
+    H.q.text.push('http://localhost:8080')
+    H.q.confirm.push(false)
+
+    await envCommand()
+
+    expect(fs.readFileSync(path.join(installDir, '.env'), 'utf-8'))
+      .toContain('NEXTAUTH_URL=http://localhost:8080')
+  })
+
+  it('doctor runs the full diagnostic and completes on a healthy mocked env', async () => {
+    // execSync returns '' for every probe (docker present); doctor should walk
+    // all sections and finish without throwing.
+    await expect(doctorCommand()).resolves.toBeUndefined()
+  })
+
+  it('doctor aborts when Docker is not installed', async () => {
+    execSyncMock.mockImplementation(() => { throw new Error('docker: command not found') })
+    await expect(doctorCommand()).rejects.toBeInstanceOf(ProcessExit)
+  })
+})
+
+// ─── setup input layer — the prompt sub-modules (driven) ────────
+//
+// setup's file generation is covered by the binary `setup --ci` test in
+// unit.test.ts; here we drive its INPUT gathering — the prompt modules —
+// with scripted answers and assert the config objects they return.
+
+describe('setup input prompts', () => {
+  beforeEach(() => {
+    H.reset()
+    vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new ProcessExit(code ?? 0)
+    }) as never)
+  })
+  afterEach(() => { H.reset(); vi.restoreAllMocks() })
+
+  it('promptAdmin returns the entered email and password', async () => {
+    H.q.text.push('admin@school.dev')
+    H.q.password.push('a-strong-password')
+    await expect(promptAdmin()).resolves.toEqual({
+      adminEmail: 'admin@school.dev',
+      adminPassword: 'a-strong-password',
+    })
+  })
+
+  it('promptAdmin exits when the email prompt is cancelled', async () => {
+    // empty queue → text resolves to the cancel sentinel → exit(0)
+    await expect(promptAdmin()).rejects.toBeInstanceOf(ProcessExit)
+  })
+
+  it('promptOrganization lowercases the slug', async () => {
+    H.q.text.push('My School', 'MY-ORG')
+    await expect(promptOrganization()).resolves.toEqual({
+      orgName: 'My School',
+      orgSlug: 'my-org',
+    })
+  })
+
+  it('promptDomain on localhost skips HTTPS and returns the chosen port', async () => {
+    H.q.text.push('localhost', '39517') // domain, then a free high port
+    const cfg = await promptDomain()
+    expect(cfg).toMatchObject({ domain: 'localhost', useHttps: false, autoSsl: false, httpPort: 39517 })
+  })
+
+  it('promptDomain with auto-SSL collects the ACME email and uses 443', async () => {
+    H.q.text.push('learn.example.com') // domain (non-localhost)
+    H.q.select.push('auto')            // HTTPS choice → automatic SSL
+    H.q.text.push('ops@example.com')   // ACME email
+    H.q.text.push('443')               // port (autoSsl → no checkPort probe)
+    const cfg = await promptDomain()
+    expect(cfg).toMatchObject({
+      domain: 'learn.example.com', useHttps: true, autoSsl: true,
+      sslEmail: 'ops@example.com', httpPort: 443,
+    })
+  })
+
+  it('promptFeatures with nothing selected returns all flags false', async () => {
+    H.q.multiselect.push([])
+    await expect(promptFeatures()).resolves.toEqual({
+      aiEnabled: false, emailEnabled: false, s3Enabled: false,
+      googleOAuthEnabled: false, unsplashEnabled: false,
+    })
+  })
+
+  it('promptDatabase local path generates a password and honours the AI image choice', async () => {
+    H.q.select.push('local', 'ai', 'local') // db setup, db image, redis setup
+    H.q.confirm.push(true)                  // acknowledge generated credentials
+    const cfg = await promptDatabase()
+    expect(cfg.useExternalDb).toBe(false)
+    expect(cfg.useExternalRedis).toBe(false)
+    expect(cfg.useAiDatabase).toBe(true)
+    expect(typeof cfg.dbPassword).toBe('string')
+    expect((cfg.dbPassword ?? '').length).toBeGreaterThan(8)
+  })
+})
+
+// ─── dev command guards ─────────────────────────────────────────
+//
+// devCommand ends in `await new Promise(() => {})` — it runs the local
+// servers until Ctrl+C and never returns by design, so the happy-path tail
+// (spawn + keep-alive) cannot be asserted past that point. Every DECISION
+// branch before it is reachable, driven here by controlling process.cwd()
+// (so findProjectRoot resolves to a fixture) and the docker/env state.
+
+describe('dev command guards', () => {
+  let tmp: string
+  let origCwd: string
+  let execSyncMock: ReturnType<typeof vi.fn>
+
+  function fakeRepo(withEnv: boolean): string {
+    const root = path.join(tmp, 'repo')
+    for (const d of ['apps/api', 'apps/web', 'apps/collab']) {
+      fs.mkdirSync(path.join(root, d), { recursive: true })
+    }
+    if (withEnv) {
+      fs.writeFileSync(path.join(root, 'apps/api/.env'),
+        'LEARNHOUSE_AUTH_JWT_SECRET_KEY=x\nCOLLAB_INTERNAL_KEY=y\n')
+      fs.writeFileSync(path.join(root, 'apps/web/.env.local'),
+        'NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL=http://localhost:9000\n')
+      fs.writeFileSync(path.join(root, 'apps/collab/.env'),
+        'COLLAB_PORT=4000\nLEARNHOUSE_API_URL=http://localhost:9000\n' +
+        'LEARNHOUSE_AUTH_JWT_SECRET_KEY=x\nCOLLAB_INTERNAL_KEY=y\n')
+    }
+    return root
+  }
+
+  beforeEach(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-dev-'))
+    origCwd = process.cwd()
+    H.reset()
+    vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new ProcessExit(code ?? 0)
+    }) as never)
+    execSyncMock = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    execSyncMock.mockReset()
+    execSyncMock.mockReturnValue(Buffer.from(''))
+  })
+
+  afterEach(() => {
+    process.chdir(origCwd)
+    fs.rmSync(tmp, { recursive: true, force: true })
+    H.reset()
+    vi.restoreAllMocks()
+  })
+
+  it('exits when not inside a LearnHouse project', async () => {
+    process.chdir(tmp) // a bare temp dir — no apps/api+apps/web up the tree
+    await expect(devCommand({})).rejects.toBeInstanceOf(ProcessExit)
+  })
+
+  it('exits when required dev env vars are missing (fix prompt cancelled)', async () => {
+    process.chdir(fakeRepo(false))
+    await expect(devCommand({ adminEmail: 'a@b.dev', adminPassword: 'pw' }))
+      .rejects.toBeInstanceOf(ProcessExit)
+  })
+
+  it('exits when Docker is not installed', async () => {
+    process.chdir(fakeRepo(true)) // env OK → past checkDevEnv
+    execSyncMock.mockImplementation(() => { throw new Error('docker: command not found') })
+    await expect(devCommand({ adminEmail: 'a@b.dev', adminPassword: 'pw' }))
+      .rejects.toBeInstanceOf(ProcessExit)
   })
 })
