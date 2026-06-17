@@ -131,6 +131,22 @@ describe('backup / restore — real tar, stubbed database', () => {
     await expect(backupCommand()).rejects.toBeInstanceOf(ProcessExit)
   })
 
+  it('restore exits when the archive cannot be extracted', async () => {
+    const junk = path.join(installDir, 'junk.tar.gz')
+    fs.writeFileSync(junk, 'this is not a gzip tarball at all') // real tar -xzf fails
+    await expect(restoreCommand(junk)).rejects.toBeInstanceOf(ProcessExit)
+    expect(fs.existsSync(path.join(installDir, '.restore-tmp'))).toBe(false) // cleaned up
+  })
+
+  it('restore exits when the database restore command fails', async () => {
+    await backupCommand() // make a valid archive that extracts fine
+    const backupsDir = path.join(installDir, 'backups')
+    const archive = path.join(backupsDir, fs.readdirSync(backupsDir).find((f) => f.endsWith('.tar.gz'))!)
+    dockerMock.dockerExecFromFile.mockImplementation(() => { throw new Error('psql restore failed') })
+    await expect(restoreCommand(archive)).rejects.toBeInstanceOf(ProcessExit)
+    expect(fs.existsSync(path.join(installDir, '.restore-tmp'))).toBe(false) // cleaned up
+  })
+
   it('restore exits when the database container is not running', async () => {
     dockerMock.isContainerRunning.mockReturnValue(false)
     const dummy = path.join(installDir, 'dummy.tar.gz')
