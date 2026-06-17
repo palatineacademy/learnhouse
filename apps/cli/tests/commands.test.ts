@@ -882,6 +882,27 @@ describe('setup / update in-process', () => {
       .toContain('LEARNHOUSE_INITIAL_ADMIN_EMAIL=admin@school.dev')
   })
 
+  it('the interactive wizard lets you go back and edit a step before confirming', async () => {
+    H.q.select.push(
+      'community', 'stable', 'continue', 'local', 'ai', 'local',
+      'continue', 'continue', 'continue',
+      'edit', 3,        // edit step 4 (Organization)
+      'confirm',        // then proceed
+    )
+    H.q.text.push(
+      'edited-install', 'localhost', '8097', 'Test Org', 'default', 'admin@school.dev',
+      'Edited Org', 'edited', // re-run of the organization step
+    )
+    H.q.password.push('adminpassword123')
+    H.q.confirm.push(true, false)
+    H.q.multiselect.push([])
+
+    await setupCommand({})
+    const cfg = JSON.parse(fs.readFileSync(
+      path.join(home, '.learnhouse', 'edited-install', 'learnhouse.config.json'), 'utf-8'))
+    expect(cfg.orgSlug).toBe('edited')
+  })
+
   it('the interactive wizard can start services after generating (startNow=yes)', async () => {
     H.q.select.push('community', 'stable', 'continue', 'local', 'ai', 'local', 'continue', 'continue', 'continue', 'confirm')
     H.q.text.push('started', 'localhost', '8094', 'Test Org', 'default', 'admin@school.dev')
