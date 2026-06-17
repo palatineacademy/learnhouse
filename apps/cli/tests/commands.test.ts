@@ -882,6 +882,23 @@ describe('setup / update in-process', () => {
       .toContain('LEARNHOUSE_INITIAL_ADMIN_EMAIL=admin@school.dev')
   })
 
+  it('setup --ci with start surfaces a port-conflict and exits', async () => {
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockImplementation(((cmd: string) => {
+      if (cmd.includes('up')) {
+        const e = new Error('boom') as Error & { stderr: Buffer }
+        e.stderr = Buffer.from('Error: port is already allocated')
+        throw e
+      }
+      return Buffer.from('')
+    }) as never)
+    await expect(setupCommand({
+      ci: true, name: 'pc', domain: 'localhost', port: 8093,
+      adminEmail: 'admin@school.dev', adminPassword: 'password123',
+      orgName: 'T', orgSlug: 'default', start: true,
+    })).rejects.toBeInstanceOf(ProcessExit)
+  })
+
   it('setup --ci WITH start brings services up (mocked docker + health)', async () => {
     await setupCommand({
       ci: true, name: 'started', domain: 'localhost', port: 8092,
