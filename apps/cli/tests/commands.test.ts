@@ -1072,6 +1072,26 @@ describe('setup / update in-process', () => {
       .toContain('ghcr.io/learnhouse/app:latest')
   })
 
+  it('setup --ci EE with external DB and Cloudflare DNS generates config', async () => {
+    await setupEnterprise({
+      ci: true, name: 'ee-ext', license: 'lh_live_TESTKEY',
+      domain: 'learn.school.dev', adminEmail: 'admin@school.dev', adminPassword: 'password123',
+      tenancy: 'single', externalDb: 'postgresql://u:p@db.ext:5432/lh',
+      dnsProvider: 'cloudflare', cfApiToken: 'cf_token', start: false,
+    })
+    expect(fs.existsSync(path.join(home, '.learnhouse', 'ee-ext', 'docker-compose.yml'))).toBe(true)
+  })
+
+  it.each([
+    ['missing license', { name: 'e1', domain: 'learn.school.dev', adminEmail: 'a@school.dev', adminPassword: 'password123' }],
+    ['missing admin password', { name: 'e2', license: 'lh_live_x', domain: 'learn.school.dev', adminEmail: 'a@school.dev' }],
+    ['bad tenancy', { name: 'e3', license: 'lh_live_x', domain: 'learn.school.dev', adminEmail: 'a@school.dev', adminPassword: 'password123', tenancy: 'nonsense' }],
+    ['cloudflare without token', { name: 'e4', license: 'lh_live_x', domain: 'learn.school.dev', adminEmail: 'a@school.dev', adminPassword: 'password123', dnsProvider: 'cloudflare' }],
+    ['bad external-db URI', { name: 'e5', license: 'lh_live_x', domain: 'learn.school.dev', adminEmail: 'a@school.dev', adminPassword: 'password123', externalDb: 'mysql://nope' }],
+  ])('setup --ci EE rejects %s', async (_label, opts) => {
+    await expect(setupEnterprise({ ci: true, start: false, ...(opts as Record<string, unknown>) })).rejects.toBeInstanceOf(ProcessExit)
+  })
+
   it('setup --ci EE agency tenancy generates wildcard-domain files', async () => {
     await setupEnterprise({
       ci: true, name: 'ee-agency', license: 'lh_live_TESTKEY',
