@@ -307,6 +307,8 @@ describe('interactive command flows', () => {
     execSyncMock = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
     execSyncMock.mockReset()
     execSyncMock.mockReturnValue(Buffer.from(''))
+    const sp = (await import('node:child_process')).spawnSync as unknown as ReturnType<typeof vi.fn>
+    sp.mockReset(); sp.mockReturnValue({ status: 0, stdout: Buffer.from(''), stderr: Buffer.from('') })
   })
 
   afterEach(() => {
@@ -631,6 +633,8 @@ describe('dev command guards', () => {
     execSyncMock = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
     execSyncMock.mockReset()
     execSyncMock.mockReturnValue(Buffer.from(''))
+    const sp = (await import('node:child_process')).spawnSync as unknown as ReturnType<typeof vi.fn>
+    sp.mockReset(); sp.mockReturnValue({ status: 0, stdout: Buffer.from(''), stderr: Buffer.from('') })
   })
 
   afterEach(() => {
@@ -950,8 +954,11 @@ describe('setup / update in-process', () => {
     healthMock.waitForHealth.mockResolvedValue(true)
     healthMock.waitForOrgSeed.mockResolvedValue(true)
     healthMock.waitForEeReady.mockResolvedValue('ee')
-    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    const cp = await import('node:child_process')
+    const m = cp.execSync as unknown as ReturnType<typeof vi.fn>
     m.mockReset(); m.mockReturnValue(Buffer.from(''))
+    const sp = cp.spawnSync as unknown as ReturnType<typeof vi.fn>
+    sp.mockReset(); sp.mockReturnValue({ status: 0, stdout: Buffer.from(''), stderr: Buffer.from('') })
   })
 
   afterEach(() => {
