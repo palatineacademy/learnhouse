@@ -960,6 +960,35 @@ describe('command success paths', () => {
     await expect(shellCommand()).resolves.toBeUndefined()
   })
 
+  it('shell exits when no containers are running', async () => {
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockImplementation(((cmd: string) =>
+      cmd.includes('docker ps')
+        ? Buffer.from('learnhouse-app-dep1\tExited (0)\tghcr.io/learnhouse/app:1.4.2\n') // not "Up"
+        : Buffer.from('')) as never)
+    await expect(shellCommand()).rejects.toBeInstanceOf(ProcessExit)
+  })
+
+  it('shell exits(0) when the container selection is cancelled', async () => {
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockImplementation(((cmd: string) =>
+      cmd.includes('docker ps')
+        ? Buffer.from('learnhouse-app-dep1\tUp 2 hours\tghcr.io/learnhouse/app:1.4.2\n')
+        : Buffer.from('')) as never)
+    // empty select queue → cancel sentinel → p.cancel() + exit(0)
+    await expect(shellCommand()).rejects.toBeInstanceOf(ProcessExit)
+  })
+
+  it('logs falls back to per-container streaming when compose has no services', async () => {
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockImplementation(((cmd: string) => {
+      if (cmd.includes('compose ps -q')) return Buffer.from('') // no compose services
+      if (cmd.includes('docker ps')) return Buffer.from('learnhouse-app-dep1\tUp 2 hours\tghcr.io/learnhouse/app:1.4.2\n')
+      return Buffer.from('')
+    }) as never)
+    await expect(logsCommand()).resolves.toBeUndefined()
+  })
+
   it('printBanner renders without error', async () => {
     await expect(printBanner()).resolves.toBeUndefined()
   })
