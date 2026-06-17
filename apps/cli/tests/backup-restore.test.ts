@@ -96,6 +96,19 @@ describe('backup / restore — real tar, stubbed database', () => {
     expect(fs.existsSync(path.join(installDir, '.restore-tmp'))).toBe(false)
   })
 
+  it('backup in interactive mode shows the menu and creates a backup', async () => {
+    const orig = process.stdout.isTTY
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true })
+    try {
+      // promptStub.select returns 'create' → createBackup runs via the menu.
+      await backupCommand()
+      const backupsDir = path.join(installDir, 'backups')
+      expect(fs.readdirSync(backupsDir).filter((f) => f.endsWith('.tar.gz')).length).toBeGreaterThanOrEqual(1)
+    } finally {
+      Object.defineProperty(process.stdout, 'isTTY', { value: orig, configurable: true })
+    }
+  })
+
   it('backupCommand --restore extracts and restores from an archive', async () => {
     await backupCommand()
     const backupsDir = path.join(installDir, 'backups')
