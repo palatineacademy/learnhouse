@@ -422,6 +422,44 @@ describe('setup input prompts', () => {
     })
   })
 
+  it('promptFeatures with every feature (SMTP email) collects all sub-config', async () => {
+    H.q.multiselect.push(['ai', 'email', 's3', 'google', 'unsplash'])
+    H.q.select.push('smtp')
+    H.q.text.push(
+      'AIzaKEY',          // gemini key
+      'smtp.test',        // smtp host
+      '587',              // smtp port
+      'user',             // smtp username
+      'noreply@test.dev', // system email (after smtp block)
+      'mybucket',         // s3 bucket
+      '',                 // s3 endpoint (empty → AWS default)
+      'gid',              // google client id
+      'gsecret',          // google client secret
+      'ukey',             // unsplash key
+    )
+    H.q.password.push('smtp-pw')
+    H.q.confirm.push(true) // use TLS
+
+    await expect(promptFeatures()).resolves.toMatchObject({
+      aiEnabled: true, emailEnabled: true, s3Enabled: true,
+      googleOAuthEnabled: true, unsplashEnabled: true,
+      geminiApiKey: 'AIzaKEY', emailProvider: 'smtp', smtpHost: 'smtp.test',
+      smtpPort: 587, smtpUsername: 'user', smtpPassword: 'smtp-pw', smtpUseTls: true,
+      systemEmailAddress: 'noreply@test.dev', s3BucketName: 'mybucket',
+      googleClientId: 'gid', googleClientSecret: 'gsecret', unsplashAccessKey: 'ukey',
+    })
+  })
+
+  it('promptFeatures with Resend email collects the API key', async () => {
+    H.q.multiselect.push(['email'])
+    H.q.select.push('resend')
+    H.q.text.push('re_key', 'noreply@test.dev')
+    await expect(promptFeatures()).resolves.toMatchObject({
+      emailEnabled: true, emailProvider: 'resend',
+      resendApiKey: 're_key', systemEmailAddress: 'noreply@test.dev',
+    })
+  })
+
   it('promptDatabase local path generates a password and honours the AI image choice', async () => {
     H.q.select.push('local', 'ai', 'local') // db setup, db image, redis setup
     H.q.confirm.push(true)                  // acknowledge generated credentials
