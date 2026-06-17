@@ -2322,3 +2322,47 @@ describe('checkForUpdates', () => {
     await expect(checkForUpdates()).resolves.toBeUndefined()
   })
 })
+
+// ─── generateEnvFile — optional-feature branches ────────────
+
+describe('generateEnvFile — feature flags', () => {
+  it('emits AI, SMTP email, S3, Google and Unsplash vars when enabled', () => {
+    const env = generateEnvFile({
+      ...baseConfig,
+      aiEnabled: true, geminiApiKey: 'AIzaKEY',
+      emailEnabled: true, emailProvider: 'smtp', smtpHost: 'smtp.test', smtpPort: 2525,
+      smtpUsername: 'u', smtpPassword: 'pw', smtpUseTls: false, systemEmailAddress: 'no@reply.dev',
+      s3Enabled: true, s3BucketName: 'bkt', s3EndpointUrl: 'https://s3.example.com',
+      googleOAuthEnabled: true, googleClientId: 'gid', googleClientSecret: 'gsec',
+      unsplashEnabled: true, unsplashAccessKey: 'ukey',
+    })
+    expect(env).toContain('LEARNHOUSE_GEMINI_API_KEY=AIzaKEY')
+    expect(env).toContain('LEARNHOUSE_IS_AI_ENABLED=True')
+    expect(env).toContain('LEARNHOUSE_SMTP_HOST=smtp.test')
+    expect(env).toContain('LEARNHOUSE_SMTP_PORT=2525')
+    expect(env).toContain('LEARNHOUSE_SMTP_USE_TLS=False')
+    expect(env).toContain('LEARNHOUSE_S3_API_BUCKET_NAME=bkt')
+    expect(env).toContain('LEARNHOUSE_S3_API_ENDPOINT_URL=https://s3.example.com')
+    expect(env).toContain('LEARNHOUSE_GOOGLE_CLIENT_ID=gid')
+    expect(env).toContain('NEXT_PUBLIC_UNSPLASH_ACCESS_KEY=ukey')
+  })
+
+  it('uses the Resend key for the resend email provider', () => {
+    const env = generateEnvFile({ ...baseConfig, emailEnabled: true, emailProvider: 'resend', resendApiKey: 're_key' })
+    expect(env).toContain('LEARNHOUSE_RESEND_API_KEY=re_key')
+  })
+
+  it('points the connection strings at external DB/Redis when configured', () => {
+    const env = generateEnvFile({
+      ...baseConfig,
+      useExternalDb: true, externalDbConnectionString: 'postgresql://u:p@db.ext:5432/lh',
+      useExternalRedis: true, externalRedisConnectionString: 'redis://cache.ext:6379',
+    })
+    expect(env).toContain('LEARNHOUSE_SQL_CONNECTION_STRING=postgresql://u:p@db.ext:5432/lh')
+    expect(env).toContain('redis://cache.ext:6379')
+  })
+
+  it('marks AI disabled when the feature is off', () => {
+    expect(generateEnvFile({ ...baseConfig, aiEnabled: false })).toContain('LEARNHOUSE_IS_AI_ENABLED=False')
+  })
+})
