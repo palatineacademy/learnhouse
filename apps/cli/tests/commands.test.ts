@@ -379,6 +379,20 @@ describe('interactive command flows', () => {
     await expect(deploymentsCommand()).resolves.toBeUndefined()
   })
 
+  it('deployments → scale tolerates a restart failure', async () => {
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    let wrote = false
+    m.mockImplementation(((cmd: string) => {
+      if ((cmd.includes('down') || cmd.includes('up')) && wrote) throw new Error('docker restart failed')
+      if (cmd.includes('up') || cmd.includes('down')) { wrote = true }
+      return Buffer.from('')
+    }) as never)
+    H.q.select.push('scale')
+    H.q.text.push('512m', '1g', '256m')
+    H.q.confirm.push(true) // restart → down/up throw → caught, no crash
+    await expect(deploymentsCommand()).resolves.toBeUndefined()
+  })
+
   it('deployments → scale shows live stats when available', async () => {
     const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
     m.mockImplementation(((cmd: string) =>
@@ -799,6 +813,19 @@ describe('command success paths', () => {
       return Buffer.from('')
     }) as never)
     await expect(healthCommand()).resolves.toBeUndefined()
+    await expect(doctorCommand()).resolves.toBeUndefined()
+  })
+
+  it('doctor reports container errors found in the logs', async () => {
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockImplementation(((cmd: string) => {
+      if (cmd.includes('docker ps')) return Buffer.from('learnhouse-app-dep1\tUp 2 hours\tghcr.io/learnhouse/app:1.4.2\n')
+      if (cmd.includes('State.Running')) return Buffer.from('true')
+      if (cmd.includes('RestartCount')) return Buffer.from('3') // some restarts
+      if (cmd.includes('docker logs')) return Buffer.from('ERROR: database connection refused\nERROR: retrying\n')
+      if (cmd.includes('{{.Image}}')) return Buffer.from('sha256:abcdef0123456789')
+      return Buffer.from('')
+    }) as never)
     await expect(doctorCommand()).resolves.toBeUndefined()
   })
 
