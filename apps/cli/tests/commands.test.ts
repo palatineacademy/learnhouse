@@ -806,6 +806,21 @@ describe('setup / update in-process', () => {
       .toContain('ghcr.io/learnhouse/app:latest')
   })
 
+  it('the interactive EE wizard generates an enterprise install', async () => {
+    H.q.select.push('single')                                   // tenancy
+    H.q.password.push('lh_live_TESTKEY', 'password123')         // license, admin password
+    H.q.text.push('learn.school.dev', 'ops@school.dev', 'admin@school.dev') // domain, acme, admin email
+    H.q.confirm.push(false, false)                              // localTls=no, startNow=no
+
+    await setupEnterprise({ name: 'ee-int' })
+
+    const base = path.join(home, '.learnhouse')
+    const found = fs.readdirSync(base).find((d) =>
+      fs.existsSync(path.join(base, d, 'docker-compose.yml')) &&
+      fs.existsSync(path.join(base, d, 'Caddyfile')))
+    expect(found).toBeTruthy()
+  })
+
   it('setup --ci --edition enterprise --no-start generates the EE install', async () => {
     await setupEnterprise({
       ci: true, name: 'ee', license: 'lh_live_TESTKEY',
