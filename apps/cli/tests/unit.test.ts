@@ -16,7 +16,7 @@ import net from 'node:net'
 import { resolveAppImage } from '../src/services/version-check.js'
 import { waitForHealth, waitForOrgSeed, waitForEeReady } from '../src/services/health.js'
 import { checkForUpdates } from '../src/services/version-check.js'
-import { autoDetectDeploymentId, listDeploymentContainers, getContainerRestartCount, isDockerInstalled, isDockerRunning, dockerComposeWorks, dockerComposePs, dockerExecToFile, dockerExecFromFile, dockerStats, dockerStatsForContainers, dockerExec, getContainerLogs, getDockerDiskUsage, isTcpPortListening, dockerComposeUpRetry, waitForAptLock } from '../src/services/docker.js'
+import { autoDetectDeploymentId, listDeploymentContainers, getContainerRestartCount, isDockerInstalled, isDockerRunning, dockerComposeWorks, dockerComposePs, dockerExecToFile, dockerExecFromFile, dockerStats, dockerStatsForContainers, dockerExec, getContainerLogs, getDockerDiskUsage, isTcpPortListening, dockerComposeUpRetry, waitForAptLock, installDockerLinux } from '../src/services/docker.js'
 import { readEnvVar, setEnvVar, isExternalDbInstall, ensureAlembicBaseline, runAlembicUpgrade } from '../src/commands/update-ee.js'
 import { replaceComposeImageTag } from '../src/services/compose-utils.js'
 import type { SetupConfig } from '../src/types.js'
@@ -2244,6 +2244,26 @@ describe('docker.ts command builders', () => {
     execSync.mockImplementation(() => { throw new Error('apt-get: not found') })
     expect(() => waitForAptLock(1)).not.toThrow()
     expect(cmd()).toBe('command -v apt-get')
+  })
+
+  it('waitForAptLock proceeds on apt systems and returns once the lock is free', () => {
+    // apt-get + cloud-init present; pgrep throws → no dpkg/apt lock held → return (no sleep).
+    execSync.mockImplementation((c: string) => {
+      if (c.includes('pgrep')) throw new Error('nothing holds the lock')
+      return Buffer.from('')
+    })
+    expect(() => waitForAptLock(1)).not.toThrow()
+  })
+
+  it('installDockerLinux fetches and runs the get.docker.com script', () => {
+    execSync.mockImplementation((c: string) => {
+      if (c.includes('pgrep')) throw new Error('lock free')
+      return Buffer.from('')
+    })
+    expect(() => installDockerLinux()).not.toThrow()
+    const cmds = execSync.mock.calls.map((c) => c[0] as string)
+    expect(cmds.some((c) => c.includes('get.docker.com'))).toBe(true)
+    expect(cmds.some((c) => c.includes('sh /tmp/get-docker.sh'))).toBe(true)
   })
 
   it('dockerComposePs runs `docker compose ps` in cwd', () => {
