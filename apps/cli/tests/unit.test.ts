@@ -16,7 +16,7 @@ import net from 'node:net'
 import { resolveAppImage } from '../src/services/version-check.js'
 import { waitForHealth, waitForOrgSeed, waitForEeReady } from '../src/services/health.js'
 import { checkForUpdates } from '../src/services/version-check.js'
-import { autoDetectDeploymentId, listDeploymentContainers, getContainerRestartCount, isDockerInstalled, isDockerRunning, dockerComposeWorks, dockerComposePs, dockerExecToFile, dockerExecFromFile, dockerStats, dockerStatsForContainers, dockerExec, getContainerLogs, getDockerDiskUsage, isTcpPortListening, dockerComposeUpRetry } from '../src/services/docker.js'
+import { autoDetectDeploymentId, listDeploymentContainers, getContainerRestartCount, isDockerInstalled, isDockerRunning, dockerComposeWorks, dockerComposePs, dockerExecToFile, dockerExecFromFile, dockerStats, dockerStatsForContainers, dockerExec, getContainerLogs, getDockerDiskUsage, isTcpPortListening, dockerComposeUpRetry, waitForAptLock } from '../src/services/docker.js'
 import { readEnvVar, setEnvVar, isExternalDbInstall, ensureAlembicBaseline, runAlembicUpgrade } from '../src/commands/update-ee.js'
 import { replaceComposeImageTag } from '../src/services/compose-utils.js'
 import type { SetupConfig } from '../src/types.js'
@@ -2237,6 +2237,13 @@ describe('docker.ts command builders', () => {
   it('dockerComposeWorks probes `docker compose version`', () => {
     expect(dockerComposeWorks()).toBe(true)
     expect(cmd()).toBe('docker compose version')
+  })
+
+  it('waitForAptLock returns immediately on a non-apt system', () => {
+    // execSync throws for  → not apt-based → early return.
+    execSync.mockImplementation(() => { throw new Error('apt-get: not found') })
+    expect(() => waitForAptLock(1)).not.toThrow()
+    expect(cmd()).toBe('command -v apt-get')
   })
 
   it('dockerComposePs runs `docker compose ps` in cwd', () => {
