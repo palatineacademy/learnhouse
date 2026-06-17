@@ -1166,6 +1166,20 @@ describe('setup / update in-process', () => {
     await expect(setupCommand({})).rejects.toBeInstanceOf(ProcessExit)
   })
 
+  it('the wizard start path exits on a generic start failure', async () => {
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockImplementation(((cmd: string) => {
+      if (cmd.includes('up')) throw new Error('some other docker failure')
+      return Buffer.from('')
+    }) as never)
+    H.q.select.push('community', 'stable', 'continue', 'local', 'ai', 'local', 'continue', 'continue', 'continue', 'confirm')
+    H.q.text.push('gen-wiz', 'localhost', '8100', 'Test Org', 'default', 'admin@school.dev')
+    H.q.password.push('adminpassword123')
+    H.q.confirm.push(true, true)
+    H.q.multiselect.push([])
+    await expect(setupCommand({})).rejects.toBeInstanceOf(ProcessExit)
+  })
+
   it('the wizard start path exits when the org never seeds', async () => {
     healthMock.waitForOrgSeed.mockResolvedValue(false) // DB up but org seed never appears
     H.q.select.push('community', 'stable', 'continue', 'local', 'ai', 'local', 'continue', 'continue', 'continue', 'confirm')
