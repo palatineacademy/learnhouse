@@ -979,6 +979,19 @@ describe('command success paths', () => {
     await expect(shellCommand()).rejects.toBeInstanceOf(ProcessExit)
   })
 
+  it('shell and logs exit when no deployment id can be resolved', async () => {
+    // config without a deploymentId + autoDetect returns nothing → no id.
+    fs.writeFileSync(path.join(installDir, 'learnhouse.config.json'), JSON.stringify({
+      version: '1.4.8', createdAt: '2026-01-01T00:00:00Z',
+      installDir, domain: 'localhost', httpPort: 8080,
+      useHttps: false, autoSsl: false, useExternalDb: false, orgSlug: 'default',
+    }))
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockReturnValue(Buffer.from('')) // compose ps empty + autoDetect empty → no id
+    await expect(shellCommand()).rejects.toBeInstanceOf(ProcessExit)
+    await expect(logsCommand()).rejects.toBeInstanceOf(ProcessExit)
+  })
+
   it('logs falls back to per-container streaming when compose has no services', async () => {
     const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
     m.mockImplementation(((cmd: string) => {
