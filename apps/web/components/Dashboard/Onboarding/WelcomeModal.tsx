@@ -2,6 +2,8 @@
 import React, { useState } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
 import { useOnboarding } from '@components/Hooks/useOnboarding'
+import { useOrg } from '@components/Contexts/OrgContext'
+import { getOrgLogoMediaDirectory } from '@services/media/media'
 import {
   ArrowRight,
   BookOpen,
@@ -101,6 +103,7 @@ const FEATURES = [
 export default function WelcomeModal() {
   const { welcomeSeen, markWelcomeSeen, dismissed } = useOnboarding()
   const { t } = useTranslation()
+  const org = useOrg() as any
   const [step, setStep] = useState<'welcome' | 'features'>('welcome')
   const [isMobile, setIsMobile] = useState(false)
 
@@ -145,10 +148,10 @@ export default function WelcomeModal() {
                 >
                   <div className="px-10 pt-10 pb-2 text-center">
                     <motion.img
-                      src="/lrn-dash.svg"
-                      alt="LearnHouse"
-                      className="h-12 w-12 mx-auto mb-5"
-                      style={{ filter: 'brightness(0)' }}
+                      src={org?.logo_image ? getOrgLogoMediaDirectory(org.org_uuid, org.logo_image) : '/lrn-dash.svg'}
+                      alt={org?.name || 'LearnHouse'}
+                      className="h-12 w-12 mx-auto mb-5 object-contain"
+                      style={org?.logo_image ? undefined : { filter: 'brightness(0)' }}
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: 0.2, duration: 0.5, ease }}

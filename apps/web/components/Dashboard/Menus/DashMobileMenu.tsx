@@ -90,18 +90,26 @@ function DashMobileMenu() {
           className="flex items-center gap-0.5 px-1.5 py-1.5 bg-[#111113]/90 backdrop-blur-xl rounded-full"
           style={{ boxShadow: '0 4px 16px rgba(0,0,0,0.3)' }}
         >
-          {/* LearnHouse logo — links to home */}
+          {/* Org logo — links to home */}
           <Link
             href="/dash"
             className="flex items-center justify-center px-2.5 py-2.5 rounded-full transition-all duration-200"
             aria-label="Home"
           >
-            <img
-              src="/lrn-dash.svg"
-              alt="LearnHouse"
-              className="h-[18px] w-[18px] opacity-60 hover:opacity-90 transition-opacity"
-              style={{ filter: 'brightness(0) invert(1)' }}
-            />
+            {org?.logo_image ? (
+              <img
+                src={getOrgLogoMediaDirectory(org.org_uuid, org.logo_image)}
+                alt={org?.name}
+                className="h-[18px] w-[18px] object-contain opacity-80 hover:opacity-100 transition-opacity rounded-sm"
+              />
+            ) : (
+              <img
+                src="/lrn-dash.svg"
+                alt="LearnHouse"
+                className="h-[18px] w-[18px] opacity-60 hover:opacity-90 transition-opacity"
+                style={{ filter: 'brightness(0) invert(1)' }}
+              />
+            )}
           </Link>
           {/* Progressive reveal — more icons as viewport widens */}
           <PillLink href="/dash/courses" icon={<BookOpen size={18} weight="fill" />} active={isActive('/dash/courses')} className="hidden min-[340px]:flex" />
@@ -185,7 +193,7 @@ function DashMobileMenu() {
             >
               {/* Org header */}
               <div className="flex items-center gap-3 px-4 py-3.5">
-                {plan === 'enterprise' && org?.logo_image ? (
+                {org?.logo_image ? (
                   <img
                     src={getOrgLogoMediaDirectory(org.org_uuid, org.logo_image)}
                     alt={org?.name}

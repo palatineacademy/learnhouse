@@ -23,6 +23,7 @@ import {
   type ContentResultType,
 } from '@/lib/dashboard-search/useContentSearch'
 import { useOrgMembership } from '@components/Contexts/OrgContext'
+import { getOrgLogoMediaDirectory } from '@services/media/media'
 import { isFeatureAvailable } from '@services/plans/plans'
 import { normalizeForSearch } from '@/lib/search/normalize'
 
@@ -243,11 +244,11 @@ export default function CommandPalette() {
                 />
               </div>
               <img
-                src="/lrn-dash.svg"
+                src={org?.logo_image ? getOrgLogoMediaDirectory(org.org_uuid, org.logo_image) : '/lrn-dash.svg'}
                 alt=""
                 aria-hidden="true"
                 draggable={false}
-                className="h-8 w-8 sm:h-9 sm:w-9 shrink-0 select-none opacity-90"
+                className="h-8 w-8 sm:h-9 sm:w-9 shrink-0 select-none opacity-90 object-contain"
               />
             </div>
 
