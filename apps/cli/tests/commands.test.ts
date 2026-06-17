@@ -37,8 +37,17 @@ const H = vi.hoisted(() => {
     spinner: () => ({ start: noop, stop: noop, message: noop }),
     select: async () => pull('select', cancel),
     multiselect: async () => pull('multiselect', cancel),
-    text: async () => pull('text', cancel),
-    password: async () => pull('password', cancel),
+    // text/password also run any inline validate(value) so those branches are exercised.
+    text: async (o?: { validate?: (v: string) => unknown }) => {
+      const v = pull('text', cancel)
+      if (o && typeof o.validate === 'function' && v !== cancel) o.validate(v as string)
+      return v
+    },
+    password: async (o?: { validate?: (v: string) => unknown }) => {
+      const v = pull('password', cancel)
+      if (o && typeof o.validate === 'function' && v !== cancel) o.validate(v as string)
+      return v
+    },
     confirm: async () => pull('confirm', false),
     isCancel: (v: unknown) => v === cancel,
   }
