@@ -8,9 +8,12 @@ import { generateEnvFile } from '../src/templates/env.js'
 import { generateNginxConf } from '../src/templates/nginx.js'
 import { generateCaddyfile } from '../src/templates/caddyfile.js'
 import { writeConfig, readConfig, findInstallDir, listInstallations } from '../src/services/config-store.js'
-import { patchComposeAddContentVolume } from '../src/services/content-volume-migration.js'
-import { validateEmail, validatePassword, validateDomain, validatePort, validateSlug } from '../src/utils/validators.js'
+import { patchComposeAddContentVolume, migrateContentVolume } from '../src/services/content-volume-migration.js'
+import { validateEmail, validatePassword, validateDomain, validatePort, validateSlug, validateRequired } from '../src/utils/validators.js'
 import { quoteEnvValue } from '../src/utils/env-quote.js'
+import { parsePostgresUrl, parseRedisUrl } from '../src/utils/network.js'
+import { resolveAppImage } from '../src/services/version-check.js'
+import { autoDetectDeploymentId, listDeploymentContainers, getContainerRestartCount } from '../src/services/docker.js'
 import { readEnvVar, setEnvVar, isExternalDbInstall, ensureAlembicBaseline, runAlembicUpgrade } from '../src/commands/update-ee.js'
 import { replaceComposeImageTag } from '../src/services/compose-utils.js'
 import type { SetupConfig } from '../src/types.js'
@@ -686,12 +689,13 @@ describe('update — docker pull/up commands', () => {
   let execSync: ReturnType<typeof vi.fn>
   let dockerComposeUp: typeof import('../src/services/docker.js').dockerComposeUp
   let dockerComposePull: typeof import('../src/services/docker.js').dockerComposePull
+  let dockerComposeDown: typeof import('../src/services/docker.js').dockerComposeDown
 
   beforeEach(async () => {
     const cp = await import('node:child_process')
     execSync = cp.execSync as unknown as ReturnType<typeof vi.fn>
     execSync.mockClear()
-    ;({ dockerComposeUp, dockerComposePull } = await import('../src/services/docker.js'))
+    ;({ dockerComposeUp, dockerComposePull, dockerComposeDown } = await import('../src/services/docker.js'))
   })
 
   const lastCmd = () => execSync.mock.calls.at(-1)?.[0] as string
@@ -712,6 +716,12 @@ describe('update — docker pull/up commands', () => {
   it('dockerComposeUp with pull=true adds --pull always (the update path)', () => {
     dockerComposeUp('/srv/lh', true)
     expect(lastCmd()).toBe('docker compose up -d --pull always')
+  })
+
+  it('dockerComposeDown runs `docker compose down` in the install dir', () => {
+    dockerComposeDown('/srv/lh')
+    expect(lastCmd()).toBe('docker compose down')
+    expect(lastOpts().cwd).toBe('/srv/lh')
   })
 })
 
@@ -869,6 +879,13 @@ describe('validatePort', () => {
 
   it('rejects a negative number', () => {
     expect(validatePort('-80')).toMatch(/between 1 and 65535/i)
+  })
+
+  it('rejects a numeric-looking string with a trailing suffix (was silently accepted)', () => {
+    // parseInt('8080abc') === 8080, so the old check passed it through.
+    expect(validatePort('8080abc')).toMatch(/between 1 and 65535/i)
+    expect(validatePort('80 80')).toMatch(/between 1 and 65535/i)
+    expect(validatePort('')).toMatch(/between 1 and 65535/i)
   })
 })
 
@@ -1749,5 +1766,307 @@ describe('generateEnvFile — no empty or undefined values', () => {
     )
     expect(lines['NEXTAUTH_SECRET']?.trim().length).toBeGreaterThan(8)
     expect(lines['LEARNHOUSE_AUTH_JWT_SECRET_KEY']?.trim().length).toBeGreaterThan(8)
+  })
+})
+
+// ─── network — Postgres/Redis connection-string parsers ─────
+//
+// setup/doctor parse external DB/Redis URLs to probe TCP reachability.
+// A wrong port or a crash on a malformed string would break the probe,
+// so pin the parse rules (incl. the default-port fallbacks).
+
+describe('parsePostgresUrl', () => {
+  it('extracts host and explicit port', () => {
+    expect(parsePostgresUrl('postgresql://user:pass@db.example.com:6432/app'))
+      .toEqual({ host: 'db.example.com', port: 6432 })
+  })
+
+  it('defaults to 5432 when no port is given', () => {
+    expect(parsePostgresUrl('postgresql://user:pass@db.example.com/app'))
+      .toEqual({ host: 'db.example.com', port: 5432 })
+  })
+
+  it('accepts the postgres:// scheme too', () => {
+    expect(parsePostgresUrl('postgres://u:p@localhost:5432/db'))
+      .toEqual({ host: 'localhost', port: 5432 })
+  })
+
+  it('returns null on a non-URL string', () => {
+    expect(parsePostgresUrl('not a url')).toBeNull()
+    expect(parsePostgresUrl('')).toBeNull()
+  })
+})
+
+describe('parseRedisUrl', () => {
+  it('extracts host and explicit port', () => {
+    expect(parseRedisUrl('redis://cache:6390')).toEqual({ host: 'cache', port: 6390 })
+  })
+
+  it('defaults to 6379 when no port is given', () => {
+    expect(parseRedisUrl('redis://cache')).toEqual({ host: 'cache', port: 6379 })
+  })
+
+  it('returns null on a non-URL string', () => {
+    expect(parseRedisUrl('not a url')).toBeNull()
+    expect(parseRedisUrl('')).toBeNull()
+  })
+})
+
+// ─── validateRequired ───────────────────────────────────────
+
+describe('validateRequired', () => {
+  it('rejects empty and whitespace-only values', () => {
+    expect(validateRequired('')).toMatch(/required/i)
+    expect(validateRequired('   ')).toMatch(/required/i)
+  })
+
+  it('accepts any non-blank value', () => {
+    expect(validateRequired('x')).toBeUndefined()
+    expect(validateRequired('  hello  ')).toBeUndefined()
+  })
+})
+
+// ─── resolveAppImage — channel / version resolution ─────────
+//
+// `dev` is a pure mapping; `stable` queries GitHub + GHCR and must fall
+// back to :latest on any network failure (never throw, never block setup).
+
+describe('resolveAppImage', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('maps the dev channel to the dev image without any network call', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const res = await resolveAppImage('dev')
+    expect(res).toEqual({ image: 'ghcr.io/learnhouse/app:dev', isLatest: false })
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('falls back to :latest when the network fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'))
+    const res = await resolveAppImage('stable')
+    expect(res).toEqual({ image: 'ghcr.io/learnhouse/app:latest', isLatest: true })
+  })
+
+  it('pins the newest non-draft release when its image manifest exists', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any) => {
+      const url = String(input)
+      if (url.includes('api.github.com')) {
+        return new Response(JSON.stringify([
+          { tag_name: 'cli-9.9.9', draft: false, prerelease: false },
+          { tag_name: '1.4.2', draft: false, prerelease: false },
+        ]), { status: 200 })
+      }
+      if (url.includes('ghcr.io/token')) return new Response(JSON.stringify({ token: 't' }), { status: 200 })
+      return new Response('', { status: 200 }) // manifest exists
+    })
+    const res = await resolveAppImage('stable')
+    expect(res).toEqual({ image: 'ghcr.io/learnhouse/app:1.4.2', isLatest: false })
+  })
+
+  it('falls back to :latest when the release exists but its image manifest is missing', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any) => {
+      const url = String(input)
+      if (url.includes('api.github.com')) {
+        return new Response(JSON.stringify([{ tag_name: '1.4.2', draft: false, prerelease: false }]), { status: 200 })
+      }
+      if (url.includes('ghcr.io/token')) return new Response(JSON.stringify({ token: 't' }), { status: 200 })
+      return new Response('', { status: 404 }) // manifest missing
+    })
+    const res = await resolveAppImage('stable')
+    expect(res).toEqual({ image: 'ghcr.io/learnhouse/app:latest', isLatest: true })
+  })
+})
+
+// ─── docker — output parsers (deployment discovery, restarts) ─
+//
+// doctor / deployments parse `docker ps` and `docker inspect` text. These
+// run the real parser against canned execSync output (execSync is mocked
+// at module scope) so a format/regex regression is caught without Docker.
+
+describe('docker output parsers', () => {
+  let execSync: ReturnType<typeof vi.fn>
+  beforeEach(async () => {
+    execSync = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    execSync.mockReset()
+  })
+
+  describe('autoDetectDeploymentId', () => {
+    it('pulls the hex id from the first learnhouse-app container', () => {
+      execSync.mockReturnValue(Buffer.from('learnhouse-app-ab12cd34\n'))
+      expect(autoDetectDeploymentId()).toBe('ab12cd34')
+    })
+
+    it('uses the first line when several containers exist', () => {
+      execSync.mockReturnValue(Buffer.from('learnhouse-app-aaaa1111\nlearnhouse-app-bbbb2222\n'))
+      expect(autoDetectDeploymentId()).toBe('aaaa1111')
+    })
+
+    it('returns null when nothing matches or output is empty', () => {
+      execSync.mockReturnValue(Buffer.from(''))
+      expect(autoDetectDeploymentId()).toBeNull()
+      execSync.mockReturnValue(Buffer.from('some-other-container\n'))
+      expect(autoDetectDeploymentId()).toBeNull()
+    })
+
+    it('returns null instead of throwing when docker errors', () => {
+      execSync.mockImplementation(() => { throw new Error('docker not running') })
+      expect(autoDetectDeploymentId()).toBeNull()
+    })
+  })
+
+  describe('listDeploymentContainers', () => {
+    it('parses tab-separated name/status/image rows for the deployment', () => {
+      execSync.mockReturnValue(Buffer.from(
+        'learnhouse-app-dep1\tUp 2 hours\tghcr.io/learnhouse/app:1.4.2\n' +
+        'learnhouse-db-dep1\tUp 2 hours (healthy)\tpgvector/pgvector:pg16\n' +
+        'unrelated-dep2\tUp\tnginx:alpine\n',
+      ))
+      const rows = listDeploymentContainers('dep1')
+      expect(rows).toHaveLength(2)
+      expect(rows[0]).toEqual({ name: 'learnhouse-app-dep1', status: 'Up 2 hours', image: 'ghcr.io/learnhouse/app:1.4.2' })
+      expect(rows.every((r) => r.name.includes('dep1'))).toBe(true)
+    })
+
+    it('returns [] when there is no matching output', () => {
+      execSync.mockReturnValue(Buffer.from(''))
+      expect(listDeploymentContainers('dep1')).toEqual([])
+    })
+  })
+
+  describe('getContainerRestartCount', () => {
+    it('parses the restart count', () => {
+      execSync.mockReturnValue(Buffer.from('7\n'))
+      expect(getContainerRestartCount('learnhouse-app-x')).toBe(7)
+    })
+
+    it('returns 0 on non-numeric output or a docker error', () => {
+      execSync.mockReturnValue(Buffer.from('not-a-number\n'))
+      expect(getContainerRestartCount('x')).toBe(0)
+      execSync.mockImplementation(() => { throw new Error('no such container') })
+      expect(getContainerRestartCount('x')).toBe(0)
+    })
+  })
+})
+
+// ─── config-store — listInstallations filtering & ordering ──
+
+describe('listInstallations — completeness filter and ordering', () => {
+  const fakeHome = path.join(os.tmpdir(), 'lh-listinstall-' + process.pid)
+  const lhBase = path.join(fakeHome, '.learnhouse')
+  let origHome: string | undefined
+
+  function writeInstall(name: string, opts: { deploymentId?: string; createdAt?: string; env?: boolean } = {}) {
+    const dir = path.join(lhBase, name)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'learnhouse.config.json'), JSON.stringify({
+      version: '0.0.0-test',
+      deploymentId: opts.deploymentId ?? 'aaaa1111',
+      createdAt: opts.createdAt ?? '2026-01-01T00:00:00Z',
+      installDir: dir, domain: 'localhost', httpPort: 8088,
+      useHttps: false, autoSsl: false, useExternalDb: false, orgSlug: 'default',
+    }))
+    if (opts.env !== false) fs.writeFileSync(path.join(dir, '.env'), '# test')
+    return dir
+  }
+
+  beforeEach(() => {
+    fs.mkdirSync(lhBase, { recursive: true })
+    origHome = process.env.HOME
+    process.env.HOME = fakeHome
+  })
+  afterEach(() => {
+    fs.rmSync(fakeHome, { recursive: true, force: true })
+    if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome
+  })
+
+  it('lists complete installs newest-first', () => {
+    writeInstall('old', { deploymentId: 'aaaa1111', createdAt: '2026-01-01T00:00:00Z' })
+    writeInstall('new', { deploymentId: 'bbbb2222', createdAt: '2026-05-01T00:00:00Z' })
+    const list = listInstallations()
+    expect(list.map((i) => i.name)).toEqual(['new', 'old'])
+  })
+
+  it('excludes a directory that has a config but no .env (incomplete install)', () => {
+    writeInstall('complete', { deploymentId: 'aaaa1111' })
+    writeInstall('partial', { deploymentId: 'bbbb2222', env: false })
+    expect(listInstallations().map((i) => i.name)).toEqual(['complete'])
+  })
+
+  it('returns [] when ~/.learnhouse has no installs', () => {
+    expect(listInstallations()).toEqual([])
+  })
+})
+
+// ─── dockerComposeExec — non-interactive contract (-T) ──────
+//
+// Callers capture stdout (alembic output, EE readiness curl) under
+// stdio:'pipe'. Without -T, `docker compose exec` can abort with "the
+// input device is not a TTY" on docker setups that allocate a TTY even
+// when piped. importActual is used because the module mock stubs this fn.
+
+describe('dockerComposeExec builds a non-interactive command', () => {
+  it('runs `docker compose exec -T <service> <cmd>` and returns stdout', async () => {
+    const execSync = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    execSync.mockReset()
+    execSync.mockReturnValue(Buffer.from('revision-abc (head)'))
+    const real = await vi.importActual<typeof import('../src/services/docker.js')>('../src/services/docker.js')
+
+    const out = real.dockerComposeExec('/srv/lh', 'learnhouse-app', 'sh -c "uv run alembic current"')
+    expect(execSync.mock.calls.at(-1)?.[0]).toBe(
+      'docker compose exec -T learnhouse-app sh -c "uv run alembic current"',
+    )
+    expect((execSync.mock.calls.at(-1)?.[1] as { cwd?: string }).cwd).toBe('/srv/lh')
+    expect(out).toBe('revision-abc (head)')
+  })
+})
+
+// ─── migrateContentVolume — fs-driven status branches ───────
+//
+// The update flow preserves uploaded media before recreating the app.
+// These cases are decided purely from docker-compose.yml / .env content
+// (no running container), so they're unit-testable end to end.
+
+describe('migrateContentVolume', () => {
+  let dir: string
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-cvm-')) })
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+
+  it('returns no_compose when there is no docker-compose.yml', () => {
+    expect(migrateContentVolume(dir, 'dep12345')).toEqual({ status: 'no_compose' })
+  })
+
+  it('returns already_mounted when the content path is already in the compose file', () => {
+    fs.writeFileSync(path.join(dir, 'docker-compose.yml'),
+      'services:\n  learnhouse-app:\n    volumes:\n      - x:/app/api/content\n')
+    expect(migrateContentVolume(dir, 'dep12345')).toEqual({ status: 'already_mounted' })
+  })
+
+  it('returns skipped_s3 when content delivery is s3api', () => {
+    fs.writeFileSync(path.join(dir, 'docker-compose.yml'), 'services:\n  learnhouse-app:\n')
+    fs.writeFileSync(path.join(dir, '.env'), 'LEARNHOUSE_CONTENT_DELIVERY_TYPE=s3api\n')
+    expect(migrateContentVolume(dir, 'dep12345')).toEqual({ status: 'skipped_s3' })
+  })
+
+  it('patches the compose file and reports patched_no_data when no container exists', () => {
+    const compose = [
+      'name: learnhouse-dep12345',
+      'services:',
+      '  learnhouse-app:',
+      '    image: ghcr.io/learnhouse/app:latest',
+      '    container_name: learnhouse-app-dep12345',
+      '    networks:',
+      '      - learnhouse-network-dep12345',
+      'networks:',
+      '  learnhouse-network-dep12345:',
+      '',
+    ].join('\n')
+    fs.writeFileSync(path.join(dir, 'docker-compose.yml'), compose)
+
+    const res = migrateContentVolume(dir, 'dep12345')
+    expect(res).toEqual({ status: 'patched_no_data' })
+
+    const patched = fs.readFileSync(path.join(dir, 'docker-compose.yml'), 'utf-8')
+    expect(patched).toContain('learnhouse_content_dep12345:/app/api/content')
+    expect(patched).toMatch(/^volumes:/m)
   })
 })

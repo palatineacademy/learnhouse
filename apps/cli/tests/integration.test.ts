@@ -355,6 +355,15 @@ describe('CLI integration — live install (command coverage)', () => {
       expect(r.exitCode).toBe(0)
       expect(r.stdout + r.stderr).not.toContain('already exists')
     })
+
+    it('a corrupt archive fails cleanly and leaves the live database intact', async () => {
+      const junk = path.join(installDir, 'backups', 'corrupt.tar.gz')
+      fs.writeFileSync(junk, 'this is not a gzip tarball')
+      const r = cli(`restore ${junk}`, 60_000)
+      expect(r.exitCode).not.toBe(0)
+      // a failed extraction must not wipe the running database
+      expect(await apiGet<{ slug: string }>(CMD_PORT, '/api/v1/orgs/slug/acme')).toMatchObject({ slug: 'acme' })
+    })
   })
 
   // ── stop / start ────────────────────────────────────────────────────────────
@@ -598,6 +607,28 @@ describe('CLI integration — upgrade (old → new image)', () => {
       const r = cli('update --version 1.2.6 --no-backup --no-migrate', 30_000)
       expect(r.stdout + r.stderr).not.toContain('Updating LearnHouse')
     })
+  })
+
+  describe('default update path (backup taken, already up to date)', () => {
+    // Every other update test passes --no-backup; this exercises the DEFAULT
+    // path that takes a pre-upgrade DB dump (db-pre-upgrade-*.sql.gz — distinct
+    // from the `backup` command's .tar.gz archives), while the install is
+    // already on latest (a no-op re-pull that must still succeed and stay up).
+    const preUpgrade = (dir: string) =>
+      (fs.existsSync(dir) ? fs.readdirSync(dir) : []).filter((f) => /^db-pre-upgrade-.*\.sql\.gz$/.test(f))
+
+    it('a plain `update` writes a pre-upgrade backup, keeps the new image and stays healthy', async () => {
+      const backupsDir = path.join(installDir, 'backups')
+      const before = preUpgrade(backupsDir).length
+
+      const r = cli('update --no-migrate', 600_000) // default backup ON; already at head
+      if (r.exitCode !== 0) console.error('update:', r.stdout, r.stderr)
+      expect(r.exitCode).toBe(0)
+
+      expect(preUpgrade(backupsDir).length).toBeGreaterThan(before)
+      expect(getContainerImage(appContainer())).toContain(NEW_VERSION)
+      expect(await waitForUrl(`http://localhost:${INTEG_PORT}/api/v1/health`, 120_000)).toBe(true)
+    }, 600_000)
   })
 })
 
