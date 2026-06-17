@@ -704,6 +704,34 @@ describe('dev command guards', () => {
     }
   })
 
+  it('installs missing dependencies before starting (bun/uv)', async () => {
+    const root = fakeRepo(true) // env present, but NO node_modules/.venv → install runs
+    process.chdir(root)
+    const cp = await import('node:child_process')
+    const spawnMock = cp.spawn as unknown as ReturnType<typeof vi.fn>
+    const spawnSyncMock = cp.spawnSync as unknown as ReturnType<typeof vi.fn>
+    spawnMock.mockClear(); spawnSyncMock.mockClear()
+    const sigintBefore = process.listenerCount('SIGINT')
+    try {
+      const promise = devCommand({ adminEmail: 'a@b.dev', adminPassword: 'pw' })
+      promise.catch(() => {})
+      await new Promise((r) => setTimeout(r, 150))
+      expect(spawnSyncMock).toHaveBeenCalled() // bun install / uv sync ran
+      expect(spawnMock).toHaveBeenCalledTimes(3)
+    } finally {
+      for (const h of process.listeners('SIGINT').slice(sigintBefore)) process.removeListener('SIGINT', h as never)
+      for (const h of process.listeners('SIGTERM')) process.removeListener('SIGTERM', h as never)
+    }
+  })
+
+  it('exits when a dependency install fails', async () => {
+    const root = fakeRepo(true) // no node_modules → install attempted
+    process.chdir(root)
+    const cp = await import('node:child_process')
+    ;(cp.spawnSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue({ status: 1, stdout: Buffer.from(''), stderr: Buffer.from('install failed') })
+    await expect(devCommand({ adminEmail: 'a@b.dev', adminPassword: 'pw' })).rejects.toBeInstanceOf(ProcessExit)
+  })
+
   it('reuses already-running infra (no admin prompts, no infra start)', async () => {
     const root = fakeRepo(true)
     for (const d of ['apps/web/node_modules', 'apps/collab/node_modules', 'apps/api/.venv']) {
