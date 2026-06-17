@@ -381,6 +381,26 @@ describe('interactive command flows', () => {
     await expect(deploymentsCommand()).resolves.toBeUndefined()
   })
 
+  it('deployments → scale falls back to per-container stats when compose stats fails', async () => {
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockImplementation(((cmd: string) => {
+      if (cmd.includes('compose stats')) throw new Error('no compose stats')
+      if (cmd.includes('docker ps')) return Buffer.from('learnhouse-app-dep1\tUp 2 hours\tghcr.io/learnhouse/app:1.4.2\n')
+      if (cmd.includes('docker stats')) return Buffer.from('NAME\tCPU\nlearnhouse-app-dep1\t5%\n')
+      return Buffer.from('')
+    }) as never)
+    H.q.select.push('scale')
+    H.q.text.push('512m', '1g', '256m')
+    H.q.confirm.push(false)
+    await expect(deploymentsCommand()).resolves.toBeUndefined()
+  })
+
+  it('deployments → scale exits when docker-compose.yml is missing', async () => {
+    fs.rmSync(path.join(installDir, 'docker-compose.yml'))
+    H.q.select.push('scale')
+    await expect(deploymentsCommand()).rejects.toBeInstanceOf(ProcessExit)
+  })
+
   it('deployments → scale reports no changes when all limits are invalid/empty', async () => {
     H.q.select.push('scale')
     H.q.text.push('bad', '', 'also-bad') // none match \d+[mg] → invalid/skip → no change
