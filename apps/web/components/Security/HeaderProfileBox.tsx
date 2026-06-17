@@ -231,7 +231,7 @@ export const HeaderProfileBox = ({ primaryColor = '' }: { primaryColor?: string 
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
-                  <Link href={getUriWithOrg(org?.slug, '/account/purchases')} className="flex items-center space-x-2">
+                  <Link href={getUriWithOrg(org?.slug, '/account/subscriptions')} className="flex items-center space-x-2">
                     <ShoppingBag size={16} weight="fill" />
                     <span>{t('account.purchases')}</span>
                   </Link>
