@@ -619,10 +619,15 @@ describe('dev command guards', () => {
       const dataHandler = (process.stdin.listeners('data').at(-1)) as (k: string) => void
       expect(typeof dataHandler).toBe('function')
       const before = spawnMock.mock.calls.length // 3 initial servers
-      dataHandler('r')          // arm the restart chord
-      await dataHandler('a')    // restart API
-      await new Promise((r) => setTimeout(r, 30))
-      expect(spawnMock.mock.calls.length).toBeGreaterThan(before) // API re-spawned
+      for (const svc of ['a', 'w', 'c', 'b']) { // restart api, web, collab, all
+        dataHandler('r')      // arm the restart chord
+        await dataHandler(svc)
+        await new Promise((r) => setTimeout(r, 10))
+      }
+      expect(spawnMock.mock.calls.length).toBeGreaterThan(before) // services re-spawned
+
+      // 'q' triggers graceful shutdown → process.exit(0).
+      await expect((async () => dataHandler('q'))()).rejects.toBeInstanceOf(ProcessExit)
     } finally {
       Object.defineProperty(stdin, 'isTTY', { value: orig.isTTY, configurable: true })
       stdin.setRawMode = orig.setRawMode; stdin.resume = orig.resume
