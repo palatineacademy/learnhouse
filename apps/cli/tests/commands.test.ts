@@ -873,6 +873,32 @@ describe('command success paths', () => {
     await expect(doctorCommand()).resolves.toBeUndefined()
   })
 
+  it('doctor reports the configured port as in use when occupied', async () => {
+    const net = await import('node:net')
+    // Reserve a free port number, then occupy it the same way checkPort binds.
+    const probe = net.createServer()
+    await new Promise<void>((r) => probe.listen(0, () => r()))
+    const port = (probe.address() as { port: number }).port
+    await new Promise<void>((r) => probe.close(() => r()))
+    fs.writeFileSync(path.join(installDir, 'learnhouse.config.json'), JSON.stringify({
+      version: '1.4.8', deploymentId: 'dep1', createdAt: '2026-01-01T00:00:00Z',
+      installDir, domain: 'localhost', httpPort: port,
+      useHttps: false, autoSsl: false, useExternalDb: false, orgSlug: 'default',
+    }))
+    const server = net.createServer()
+    await new Promise<void>((r) => server.listen(port, () => r()))
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockImplementation(((cmd: string) =>
+      cmd.includes('docker ps')
+        ? Buffer.from('learnhouse-app-dep1\tUp 2 hours\tghcr.io/learnhouse/app:1.4.2\n')
+        : cmd.includes('State.Running') ? Buffer.from('true') : Buffer.from('')) as never)
+    try {
+      await expect(doctorCommand()).resolves.toBeUndefined() // hits the port-in-use branch
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()))
+    }
+  })
+
   it('doctor warns on short secrets and unreadable logs', async () => {
     fs.writeFileSync(path.join(installDir, '.env'),
       'LEARNHOUSE_DOMAIN=localhost\nHTTP_PORT=8080\nLEARNHOUSE_AUTH_JWT_SECRET_KEY=abc\n') // too short
