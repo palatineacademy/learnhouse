@@ -15,7 +15,7 @@ import { parsePostgresUrl, parseRedisUrl, getPublicIp, checkPort, findAvailableP
 import net from 'node:net'
 import { resolveAppImage } from '../src/services/version-check.js'
 import { waitForHealth, waitForOrgSeed } from '../src/services/health.js'
-import { autoDetectDeploymentId, listDeploymentContainers, getContainerRestartCount } from '../src/services/docker.js'
+import { autoDetectDeploymentId, listDeploymentContainers, getContainerRestartCount, isDockerInstalled, isDockerRunning, dockerComposeWorks, dockerComposePs, dockerExecToFile, dockerExecFromFile, dockerStats, dockerStatsForContainers, dockerExec, getContainerLogs, getDockerDiskUsage, isTcpPortListening, dockerComposeUpRetry } from '../src/services/docker.js'
 import { readEnvVar, setEnvVar, isExternalDbInstall, ensureAlembicBaseline, runAlembicUpgrade } from '../src/commands/update-ee.js'
 import { replaceComposeImageTag } from '../src/services/compose-utils.js'
 import type { SetupConfig } from '../src/types.js'
@@ -2192,5 +2192,102 @@ describe('health pollers', () => {
   it('waitForOrgSeed resolves true once the org endpoint returns ok', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"slug":"default"}', { status: 200 }))
     expect(await waitForOrgSeed('http://localhost:8080', 'default')).toBe(true)
+  })
+})
+
+// ─── docker.ts — command construction for the remaining helpers ──
+//
+// Each helper is a thin wrapper that builds a specific docker command.
+// Asserting the exact command (and the success/failure handling for the
+// boolean probes) pins the contract without a real daemon.
+
+describe('docker.ts command builders', () => {
+  let execSync: ReturnType<typeof vi.fn>
+  beforeEach(async () => {
+    execSync = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    execSync.mockReset()
+    execSync.mockReturnValue(Buffer.from(''))
+  })
+  const cmd = () => execSync.mock.calls.at(-1)?.[0] as string
+  const opts = () => execSync.mock.calls.at(-1)?.[1] as { cwd?: string }
+
+  it('isDockerInstalled probes `docker --version` (true ok / false on throw)', () => {
+    expect(isDockerInstalled()).toBe(true)
+    expect(cmd()).toBe('docker --version')
+    execSync.mockImplementation(() => { throw new Error('nope') })
+    expect(isDockerInstalled()).toBe(false)
+  })
+
+  it('isDockerRunning probes `docker info` and rethrows permission-denied', () => {
+    expect(isDockerRunning()).toBe(true)
+    expect(cmd()).toBe('docker info')
+    execSync.mockImplementation(() => { throw new Error('not running') })
+    expect(isDockerRunning()).toBe(false)
+    execSync.mockImplementation(() => { const e = new Error('x') as Error & { stderr: Buffer }; e.stderr = Buffer.from('permission denied'); throw e })
+    expect(() => isDockerRunning()).toThrow(/permission denied/i)
+  })
+
+  it('dockerComposeWorks probes `docker compose version`', () => {
+    expect(dockerComposeWorks()).toBe(true)
+    expect(cmd()).toBe('docker compose version')
+  })
+
+  it('dockerComposePs runs `docker compose ps` in cwd', () => {
+    dockerComposePs('/srv/lh')
+    expect(cmd()).toBe('docker compose ps')
+    expect(opts().cwd).toBe('/srv/lh')
+  })
+
+  it('dockerComposeUpRetry runs `docker compose up -d`', () => {
+    dockerComposeUpRetry('/srv/lh')
+    expect(cmd()).toBe('docker compose up -d')
+  })
+
+  it('dockerExec / getContainerLogs / getDockerDiskUsage build their commands', () => {
+    dockerExec('learnhouse-app-x', 'env')
+    expect(cmd()).toBe('docker exec learnhouse-app-x env')
+    getContainerLogs('learnhouse-app-x', 25)
+    expect(cmd()).toBe('docker logs --tail 25 learnhouse-app-x')
+    getDockerDiskUsage()
+    expect(cmd()).toBe('docker system df')
+  })
+
+  it('dockerExecToFile / dockerExecFromFile redirect through a shell', () => {
+    dockerExecToFile('db-x', 'pg_dump learnhouse', '/tmp/out.sql')
+    expect(cmd()).toBe('docker exec db-x pg_dump learnhouse > "/tmp/out.sql"')
+    dockerExecFromFile('db-x', 'psql learnhouse', '/tmp/in.sql')
+    expect(cmd()).toBe('docker exec -i db-x psql learnhouse < "/tmp/in.sql"')
+  })
+
+  it('dockerStats / dockerStatsForContainers build the table format', () => {
+    dockerStats('/srv/lh')
+    expect(cmd()).toContain('docker compose stats --no-stream --format')
+    dockerStatsForContainers(['a', 'b'])
+    expect(cmd()).toContain('docker stats --no-stream')
+    expect(cmd()).toMatch(/ a b$/)
+    expect(dockerStatsForContainers([])).toBe('') // short-circuits, no command
+  })
+
+  it('isTcpPortListening tries lsof then ss (true if either reports a listener)', () => {
+    execSync.mockReturnValue(Buffer.from('node 123 LISTEN'))
+    expect(isTcpPortListening(8080)).toBe(true)
+    expect(cmd()).toContain('lsof -nP -iTCP:8080 -sTCP:LISTEN')
+    execSync.mockImplementation(() => { throw new Error('nothing') })
+    expect(isTcpPortListening(8080)).toBe(false)
+  })
+})
+
+describe('docker.ts isContainerRunning (real impl)', () => {
+  it('runs docker inspect and maps "true" → true, else false', async () => {
+    const execSync = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    execSync.mockReset()
+    const real = await vi.importActual<typeof import('../src/services/docker.js')>('../src/services/docker.js')
+    execSync.mockReturnValue(Buffer.from('true\n'))
+    expect(real.isContainerRunning('learnhouse-app-x')).toBe(true)
+    expect(execSync.mock.calls.at(-1)?.[0]).toBe("docker inspect -f '{{.State.Running}}' learnhouse-app-x")
+    execSync.mockReturnValue(Buffer.from('false\n'))
+    expect(real.isContainerRunning('x')).toBe(false)
+    execSync.mockImplementation(() => { throw new Error('no container') })
+    expect(real.isContainerRunning('x')).toBe(false)
   })
 })
