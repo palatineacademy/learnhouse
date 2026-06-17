@@ -318,6 +318,13 @@ describe('interactive command flows', () => {
     expect(limits.get('redis')).toBe('256m')
   })
 
+  it('scale restarts services when the user confirms', async () => {
+    H.q.text.push('512m', '1g', '256m')
+    H.q.confirm.push(true) // restart now → dockerComposeDown + dockerComposeUp (mocked)
+    await expect(scaleCommand()).resolves.toBeUndefined()
+    expect(parseMemLimit(path.join(installDir, 'docker-compose.yml')).get('db')).toBe('1g')
+  })
+
   it('scale skips an invalid limit and leaves that service unchanged', async () => {
     H.q.text.push('notvalid', '1g', '') // app invalid, db ok, redis empty/skip
     H.q.confirm.push(false)
@@ -365,6 +372,15 @@ describe('interactive command flows', () => {
 
     expect(fs.readFileSync(path.join(installDir, '.env'), 'utf-8'))
       .toContain('NEXTAUTH_URL=http://localhost:8080')
+  })
+
+  it('env restarts services after an edit when the user confirms', async () => {
+    H.q.select.push('domain', 'LEARNHOUSE_DOMAIN', '_done')
+    H.q.text.push('restarted.example.com')
+    H.q.confirm.push(true) // restart now → dockerComposeDown + Up (mocked)
+    await expect(envCommand()).resolves.toBeUndefined()
+    expect(fs.readFileSync(path.join(installDir, '.env'), 'utf-8'))
+      .toContain('LEARNHOUSE_DOMAIN=restarted.example.com')
   })
 
   it('doctor runs the full diagnostic and completes on a healthy mocked env', async () => {
