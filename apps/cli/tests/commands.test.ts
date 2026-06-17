@@ -496,6 +496,12 @@ describe('setup input prompts', () => {
     }
   })
 
+  it('promptDatabase external loops on an unparseable connection string', async () => {
+    H.q.select.push('external')
+    H.q.text.push('postgresql://[bad') // parse fails → loop; next text prompt → cancel → exit
+    await expect(promptDatabase()).rejects.toBeInstanceOf(ProcessExit)
+  })
+
   it('promptDatabase with external Redis verifies a reachable Redis URL', async () => {
     const net = await import('node:net')
     const server = net.createServer()

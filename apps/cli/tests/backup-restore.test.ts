@@ -18,16 +18,13 @@ const promptStub = vi.hoisted(() => ({
 }))
 vi.mock('@clack/prompts', () => promptStub)
 vi.mock('../src/utils/prompt.js', () => promptStub)
-vi.mock('../src/services/docker.js', async () => {
-  const f = await import('node:fs')
-  return {
-    isContainerRunning: () => true,
-    autoDetectDeploymentId: () => 'dep1',
-    dockerExecToFile: (_c: string, _cmd: string, out: string) =>
-      f.writeFileSync(out, 'CREATE TABLE t (id int);\nDROP TABLE IF EXISTS t;\n'),
-    dockerExecFromFile: () => {},
-  }
-})
+const dockerMock = vi.hoisted(() => ({
+  isContainerRunning: vi.fn(() => true),
+  autoDetectDeploymentId: vi.fn(() => 'dep1'),
+  dockerExecToFile: vi.fn(),
+  dockerExecFromFile: vi.fn(),
+}))
+vi.mock('../src/services/docker.js', () => dockerMock)
 
 import { backupCommand } from '../src/commands/backup.js'
 import { restoreCommand } from '../src/commands/restore.js'
@@ -54,6 +51,11 @@ describe('backup / restore — real tar, stubbed database', () => {
     fs.writeFileSync(path.join(installDir, '.env'), 'LEARNHOUSE_DOMAIN=localhost\n')
     origHome = process.env.HOME
     process.env.HOME = home
+    dockerMock.isContainerRunning.mockReturnValue(true)
+    dockerMock.autoDetectDeploymentId.mockReturnValue('dep1')
+    dockerMock.dockerExecFromFile.mockReset().mockImplementation(() => {})
+    dockerMock.dockerExecToFile.mockReset().mockImplementation((_c: string, _cmd: string, out: string) =>
+      fs.writeFileSync(out, 'CREATE TABLE t (id int);\nDROP TABLE IF EXISTS t;\n'))
     vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
       throw new ProcessExit(code ?? 0)
     }) as never)
@@ -99,6 +101,31 @@ describe('backup / restore — real tar, stubbed database', () => {
     const backupsDir = path.join(installDir, 'backups')
     const archive = path.join(backupsDir, fs.readdirSync(backupsDir).find((f) => f.endsWith('.tar.gz'))!)
     await expect(backupCommand(archive, { restore: true })).resolves.toBeUndefined()
+  })
+
+  it('backup exits and cleans up when the pg_dump fails', async () => {
+    dockerMock.dockerExecToFile.mockImplementation(() => { throw new Error('pg_dump failed') })
+    await expect(backupCommand()).rejects.toBeInstanceOf(ProcessExit)
+    // The temp working dir must be removed even on failure.
+    const backupsDir = path.join(installDir, 'backups')
+    if (fs.existsSync(backupsDir)) {
+      expect(fs.readdirSync(backupsDir).filter((e) => !e.endsWith('.tar.gz'))).toHaveLength(0)
+    }
+  })
+
+  it('backup exits when the database container is not running', async () => {
+    dockerMock.isContainerRunning.mockReturnValue(false)
+    await expect(backupCommand()).rejects.toBeInstanceOf(ProcessExit)
+  })
+
+  it('restore also restores the .env when the user confirms', async () => {
+    await backupCommand()
+    const backupsDir = path.join(installDir, 'backups')
+    const archive = path.join(backupsDir, fs.readdirSync(backupsDir).find((f) => f.endsWith('.tar.gz'))!)
+    // Change the live .env, then restore — the archived .env should come back.
+    fs.writeFileSync(path.join(installDir, '.env'), 'LEARNHOUSE_DOMAIN=changed\n')
+    await backupCommand(archive, { restore: true })
+    expect(fs.readFileSync(path.join(installDir, '.env'), 'utf-8')).toContain('LEARNHOUSE_DOMAIN=localhost')
   })
 
   it('restore rejects an archive with no database.sql inside', async () => {
