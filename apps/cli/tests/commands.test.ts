@@ -1235,6 +1235,15 @@ describe('setup / update in-process', () => {
     await expect(setupEnterprise({ name: 'ee-int2' })).rejects.toBeInstanceOf(ProcessExit)
   })
 
+  it('EE interactive starts the stack when startNow is confirmed', async () => {
+    H.q.select.push('single')
+    H.q.password.push('lh_live_TESTKEY', 'password123')
+    H.q.text.push('learn.school.dev', 'ops@school.dev', 'admin@school.dev')
+    H.q.confirm.push(false, true) // localTls=no, startNow=YES → startEe (login/pull/up, mocked)
+    await setupEnterprise({ name: 'ee-int-start' })
+    expect(fs.existsSync(path.join(home, '.learnhouse', 'ee-int-start', 'docker-compose.yml'))).toBe(true)
+  })
+
   it('the interactive EE wizard generates an enterprise install', async () => {
     H.q.select.push('single')                                   // tenancy
     H.q.password.push('lh_live_TESTKEY', 'password123')         // license, admin password
