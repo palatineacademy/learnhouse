@@ -729,6 +729,14 @@ describe('command success paths', () => {
   it('printBanner renders without error', async () => {
     await expect(printBanner()).resolves.toBeUndefined()
   })
+
+  it('status / start / stop exit cleanly when Docker errors', async () => {
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockImplementation((() => { throw new Error('Cannot connect to the Docker daemon') }) as never)
+    await expect(statusCommand()).rejects.toBeInstanceOf(ProcessExit)
+    await expect(startCommand()).rejects.toBeInstanceOf(ProcessExit)
+    await expect(stopCommand()).rejects.toBeInstanceOf(ProcessExit)
+  })
 })
 
 // ─── setup + update full bodies (in-process, mocked docker/health) ──
@@ -834,6 +842,31 @@ describe('setup / update in-process', () => {
       'name: learnhouse-dep1\nservices:\n  api:\n    image: images.learnhouse.app/enterprise-backend:prod\n')
 
     await expect(updateCommand({ backup: false, migrate: false })).resolves.toBeUndefined()
+  })
+
+  function seedInstall(dir: string) {
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'learnhouse.config.json'), JSON.stringify({
+      version: '1.4.0', deploymentId: 'dep1', createdAt: '2026-01-01T00:00:00Z',
+      installDir: dir, domain: 'localhost', httpPort: 8080,
+      useHttps: false, autoSsl: false, useExternalDb: false, orgSlug: 'default',
+    }))
+    fs.writeFileSync(path.join(dir, '.env'), 'LEARNHOUSE_DOMAIN=localhost\n')
+    fs.writeFileSync(path.join(dir, 'docker-compose.yml'),
+      'name: learnhouse-dep1\nservices:\n  learnhouse-app:\n    image: ghcr.io/learnhouse/app:1.4.0\n    container_name: learnhouse-app-dep1\n')
+  }
+
+  it('update aborts when the default pre-upgrade backup fails', async () => {
+    seedInstall(path.join(home, '.learnhouse', 'test'))
+    // Default backup ON; execSync writes no dump file → backupDatabase throws → abort.
+    await expect(updateCommand({ migrate: false })).rejects.toBeInstanceOf(ProcessExit)
+  })
+
+  it('update --to a nonexistent version fails before changing anything', async () => {
+    seedInstall(path.join(home, '.learnhouse', 'test'))
+    // fetch already rejects (beforeEach) → resolveTag false for both name and v-prefix.
+    await expect(updateCommand({ version: '0.0.0-nope', backup: false, migrate: false }))
+      .rejects.toBeInstanceOf(ProcessExit)
   })
 
   it('setup --ci rejects a short password before writing anything', async () => {
