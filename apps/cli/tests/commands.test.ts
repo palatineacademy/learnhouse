@@ -754,6 +754,29 @@ describe('setup / update in-process', () => {
     expect(fs.readFileSync(path.join(dir, 'docker-compose.yml'), 'utf-8'))
       .toContain('ghcr.io/learnhouse/app:latest')
   })
+
+  it('update --to <version> resolves the tag via GHCR and pins it', async () => {
+    const dir = path.join(home, '.learnhouse', 'test')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'learnhouse.config.json'), JSON.stringify({
+      version: '1.4.0', deploymentId: 'dep1', createdAt: '2026-01-01T00:00:00Z',
+      installDir: dir, domain: 'localhost', httpPort: 8080,
+      useHttps: false, autoSsl: false, useExternalDb: false, orgSlug: 'default',
+    }))
+    fs.writeFileSync(path.join(dir, '.env'), 'LEARNHOUSE_DOMAIN=localhost\n')
+    fs.writeFileSync(path.join(dir, 'docker-compose.yml'),
+      'name: learnhouse-dep1\nservices:\n  learnhouse-app:\n    image: ghcr.io/learnhouse/app:1.4.0\n    container_name: learnhouse-app-dep1\n    networks:\n      - n\nnetworks:\n  n:\n')
+
+    // resolveTag fetches a GHCR token then the manifest — make both succeed.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((async (u: unknown) =>
+      String(u).includes('ghcr.io/token')
+        ? new Response(JSON.stringify({ token: 't' }), { status: 200 })
+        : new Response('', { status: 200 })) as typeof fetch)
+
+    await expect(updateCommand({ version: '1.2.6', backup: false, migrate: false })).resolves.toBeUndefined()
+    expect(fs.readFileSync(path.join(dir, 'docker-compose.yml'), 'utf-8'))
+      .toContain('ghcr.io/learnhouse/app:1.2.6')
+  })
 })
 
 // ─── prerequisites — docker preflight ───────────────────────────
