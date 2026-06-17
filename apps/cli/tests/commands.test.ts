@@ -381,6 +381,12 @@ describe('interactive command flows', () => {
     await expect(deploymentsCommand()).resolves.toBeUndefined()
   })
 
+  it('deployments → scale reports no changes when all limits are invalid/empty', async () => {
+    H.q.select.push('scale')
+    H.q.text.push('bad', '', 'also-bad') // none match \d+[mg] → invalid/skip → no change
+    await expect(deploymentsCommand()).resolves.toBeUndefined()
+  })
+
   it('deployments → scale tolerates a restart failure', async () => {
     const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
     let wrote = false
