@@ -689,6 +689,42 @@ describe('setup / update in-process', () => {
       .toContain('LEARNHOUSE_INITIAL_ADMIN_EMAIL=admin@school.dev')
   })
 
+  it('the interactive wizard generates a complete community install', async () => {
+    // Scripted answers, in prompt order, for the 6-step wizard with defaults.
+    H.q.select.push(
+      'community',  // edition
+      'stable',     // channel
+      'continue',   // step 1 (domain) confirmOrBack
+      'local',      // db setup
+      'ai',         // db image
+      'local',      // redis setup
+      'continue',   // step 2 (database)
+      'continue',   // step 3 (organization)
+      'continue',   // step 4 (admin)
+      'confirm',    // final summary
+    )
+    H.q.text.push(
+      'default',            // install name
+      'localhost',          // domain
+      '8090',               // http port
+      'Test Org',           // org name
+      'default',            // org slug
+      'admin@school.dev',   // admin email
+    )
+    H.q.password.push('adminpassword123')
+    H.q.confirm.push(true, false) // db credential ack = true; start now = false
+    H.q.multiselect.push([])      // no optional features
+
+    await setupCommand({})
+
+    const dir = path.join(home, '.learnhouse', 'default')
+    expect(fs.existsSync(path.join(dir, 'docker-compose.yml'))).toBe(true)
+    expect(fs.existsSync(path.join(dir, '.env'))).toBe(true)
+    expect(fs.existsSync(path.join(dir, 'learnhouse.config.json'))).toBe(true)
+    expect(fs.readFileSync(path.join(dir, '.env'), 'utf-8'))
+      .toContain('LEARNHOUSE_INITIAL_ADMIN_EMAIL=admin@school.dev')
+  })
+
   it('setup --ci rejects a short password before writing anything', async () => {
     await expect(setupCommand({
       ci: true, name: 'bad', domain: 'localhost', port: 8090,
