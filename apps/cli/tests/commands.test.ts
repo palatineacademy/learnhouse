@@ -372,6 +372,13 @@ describe('interactive command flows', () => {
     expect(parseMemLimit(path.join(installDir, 'docker-compose.yml')).get('learnhouse-app')).toBe('512m')
   })
 
+  it('deployments → scale restarts services when confirmed', async () => {
+    H.q.select.push('scale')
+    H.q.text.push('512m', '1g', '256m')
+    H.q.confirm.push(true) // restart → dockerComposeDown + Up (mocked execSync)
+    await expect(deploymentsCommand()).resolves.toBeUndefined()
+  })
+
   it('deployments → scale shows live stats when available', async () => {
     const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
     m.mockImplementation(((cmd: string) =>
