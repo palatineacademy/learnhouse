@@ -94,6 +94,13 @@ describe('backup / restore — real tar, stubbed database', () => {
     expect(fs.existsSync(path.join(installDir, '.restore-tmp'))).toBe(false)
   })
 
+  it('backupCommand --restore extracts and restores from an archive', async () => {
+    await backupCommand()
+    const backupsDir = path.join(installDir, 'backups')
+    const archive = path.join(backupsDir, fs.readdirSync(backupsDir).find((f) => f.endsWith('.tar.gz'))!)
+    await expect(backupCommand(archive, { restore: true })).resolves.toBeUndefined()
+  })
+
   it('restore rejects an archive with no database.sql inside', async () => {
     // Build a tar.gz that contains a folder but no database.sql.
     const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-br-bad-'))

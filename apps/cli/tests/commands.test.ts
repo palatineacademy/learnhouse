@@ -666,6 +666,24 @@ describe('command success paths', () => {
     await expect(deploymentsCommand()).resolves.toBeUndefined()
   })
 
+  it('logs streams via docker compose when services are present', async () => {
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockImplementation(((cmd: string) =>
+      cmd.includes('ps -q') ? Buffer.from('abc123\n') : Buffer.from('')) as never)
+    // dockerComposeLogs spawns (fake child) and returns without blocking.
+    await expect(logsCommand()).resolves.toBeUndefined()
+  })
+
+  it('shell opens an interactive session in a running container', async () => {
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockImplementation(((cmd: string) =>
+      cmd.includes('docker ps')
+        ? Buffer.from('learnhouse-app-dep1\tUp 2 hours\tghcr.io/learnhouse/app:1.4.2\n')
+        : Buffer.from('')) as never)
+    H.q.select.push('learnhouse-app-dep1')
+    await expect(shellCommand()).resolves.toBeUndefined()
+  })
+
   it('printBanner renders without error', async () => {
     await expect(printBanner()).resolves.toBeUndefined()
   })
