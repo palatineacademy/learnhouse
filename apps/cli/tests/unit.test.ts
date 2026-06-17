@@ -15,6 +15,7 @@ import { parsePostgresUrl, parseRedisUrl, getPublicIp, checkPort, findAvailableP
 import net from 'node:net'
 import { resolveAppImage } from '../src/services/version-check.js'
 import { waitForHealth, waitForOrgSeed } from '../src/services/health.js'
+import { checkForUpdates } from '../src/services/version-check.js'
 import { autoDetectDeploymentId, listDeploymentContainers, getContainerRestartCount, isDockerInstalled, isDockerRunning, dockerComposeWorks, dockerComposePs, dockerExecToFile, dockerExecFromFile, dockerStats, dockerStatsForContainers, dockerExec, getContainerLogs, getDockerDiskUsage, isTcpPortListening, dockerComposeUpRetry } from '../src/services/docker.js'
 import { readEnvVar, setEnvVar, isExternalDbInstall, ensureAlembicBaseline, runAlembicUpgrade } from '../src/commands/update-ee.js'
 import { replaceComposeImageTag } from '../src/services/compose-utils.js'
@@ -2289,5 +2290,35 @@ describe('docker.ts isContainerRunning (real impl)', () => {
     expect(real.isContainerRunning('x')).toBe(false)
     execSync.mockImplementation(() => { throw new Error('no container') })
     expect(real.isContainerRunning('x')).toBe(false)
+  })
+})
+
+// ─── version-check — checkForUpdates (mocked npm registry) ──
+
+describe('checkForUpdates', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('prints an update notice when the registry has a newer version', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ 'dist-tags': { latest: '99.0.0' } }), { status: 200 }))
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { logs.push(String(m ?? '')) })
+    await checkForUpdates()
+    spy.mockRestore()
+    expect(logs.join('\n')).toMatch(/Update available/)
+  })
+
+  it('stays silent when already up to date', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ 'dist-tags': { latest: '0.0.1' } }), { status: 200 }))
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await checkForUpdates()
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
+  })
+
+  it('never throws on a network error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'))
+    await expect(checkForUpdates()).resolves.toBeUndefined()
   })
 })

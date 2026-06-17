@@ -77,6 +77,7 @@ import { checkDevEnv } from '../src/services/env-check.js'
 import { devCommand } from '../src/commands/dev.js'
 import { printBanner } from '../src/ui/banner.js'
 import { setupCommand } from '../src/commands/setup.js'
+import { checkPrerequisites } from '../src/prompts/prerequisites.js'
 
 // ─── Command guards — every entry point must bail cleanly with no install ──
 //
@@ -716,5 +717,26 @@ describe('setup / update in-process', () => {
     // The compose tag was rewritten to :latest (offline fallback).
     expect(fs.readFileSync(path.join(dir, 'docker-compose.yml'), 'utf-8'))
       .toContain('ghcr.io/learnhouse/app:latest')
+  })
+})
+
+// ─── prerequisites — docker preflight ───────────────────────────
+
+describe('checkPrerequisites', () => {
+  let execSyncMock: ReturnType<typeof vi.fn>
+  beforeEach(async () => {
+    vi.spyOn(process, 'exit').mockImplementation(((code?: number) => { throw new ProcessExit(code ?? 0) }) as never)
+    execSyncMock = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    execSyncMock.mockReset(); execSyncMock.mockReturnValue(Buffer.from(''))
+  })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('resolves when Docker is installed and running', async () => {
+    await expect(checkPrerequisites()).resolves.toBeUndefined()
+  })
+
+  it('exits when Docker is missing', async () => {
+    execSyncMock.mockImplementation(() => { throw new Error('docker: command not found') })
+    await expect(checkPrerequisites()).rejects.toBeInstanceOf(ProcessExit)
   })
 })
