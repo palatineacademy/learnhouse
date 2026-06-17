@@ -89,6 +89,7 @@ function groupContentResults(results: ContentResult[]): Record<ContentResultType
 export default function CommandPalette() {
   const { t } = useTranslation()
   const { open, setOpen } = useCommandPalette()
+  const { org } = useOrgMembership()
   const router = useRouter()
   const [query, setQuery] = useState('')
 
