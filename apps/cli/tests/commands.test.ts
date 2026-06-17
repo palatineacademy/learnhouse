@@ -11,7 +11,8 @@ vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process')
   const fakeChild = () => {
     const stream = { on: () => {} }
-    return { stdout: stream, stderr: stream, on: () => {}, kill: () => {}, killed: false, exitCode: null, pid: 1 }
+    // exitCode 0 → killProcess() resolves immediately (no real process to await).
+    return { stdout: stream, stderr: stream, on: () => {}, kill: () => {}, killed: false, exitCode: 0, pid: 1 }
   }
   return {
     ...actual,
@@ -589,6 +590,47 @@ describe('dev command guards', () => {
     execSyncMock.mockImplementation(() => { throw new Error('docker: command not found') })
     await expect(devCommand({ adminEmail: 'a@b.dev', adminPassword: 'pw' }))
       .rejects.toBeInstanceOf(ProcessExit)
+  })
+
+  it('the interactive restart keys re-spawn the requested service', async () => {
+    const root = fakeRepo(true)
+    for (const d of ['apps/web/node_modules', 'apps/collab/node_modules', 'apps/api/.venv']) {
+      fs.mkdirSync(path.join(root, d), { recursive: true })
+    }
+    process.chdir(root)
+
+    const cp = await import('node:child_process')
+    const spawnMock = cp.spawn as unknown as ReturnType<typeof vi.fn>
+    spawnMock.mockClear()
+
+    // Fake a TTY stdin so dev registers its keypress handler.
+    const stdin = process.stdin as unknown as Record<string, unknown>
+    const orig = { isTTY: stdin.isTTY, setRawMode: stdin.setRawMode, resume: stdin.resume, setEncoding: stdin.setEncoding, pause: stdin.pause }
+    Object.defineProperty(stdin, 'isTTY', { value: true, configurable: true })
+    stdin.setRawMode = () => stdin; stdin.resume = () => stdin
+    stdin.setEncoding = () => stdin; stdin.pause = () => stdin
+
+    const sigintBefore = process.listenerCount('SIGINT')
+    try {
+      const promise = devCommand({ adminEmail: 'a@b.dev', adminPassword: 'pw' })
+      promise.catch(() => {})
+      await new Promise((r) => setTimeout(r, 150)) // reach the keep-alive + handler registration
+
+      const dataHandler = (process.stdin.listeners('data').at(-1)) as (k: string) => void
+      expect(typeof dataHandler).toBe('function')
+      const before = spawnMock.mock.calls.length // 3 initial servers
+      dataHandler('r')          // arm the restart chord
+      await dataHandler('a')    // restart API
+      await new Promise((r) => setTimeout(r, 30))
+      expect(spawnMock.mock.calls.length).toBeGreaterThan(before) // API re-spawned
+    } finally {
+      Object.defineProperty(stdin, 'isTTY', { value: orig.isTTY, configurable: true })
+      stdin.setRawMode = orig.setRawMode; stdin.resume = orig.resume
+      stdin.setEncoding = orig.setEncoding; stdin.pause = orig.pause
+      process.stdin.removeAllListeners('data')
+      for (const h of process.listeners('SIGINT').slice(sigintBefore)) process.removeListener('SIGINT', h as never)
+      for (const h of process.listeners('SIGTERM')) process.removeListener('SIGTERM', h as never)
+    }
   })
 
   it('starts all three servers and enters the keep-alive loop (happy path)', async () => {
