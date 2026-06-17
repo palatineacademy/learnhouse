@@ -2302,6 +2302,21 @@ describe('docker.ts command builders', () => {
     expect(n).toBe(2) // first attempt failed, second succeeded
   }, 30_000)
 
+  it('dockerComposeUpRetry rethrows after exhausting attempts', () => {
+    // attempts=1 → no retry/sleep; the single failure propagates.
+    execSync.mockImplementation(() => { throw new Error('still unhealthy') })
+    expect(() => dockerComposeUpRetry('/srv/lh', 1)).toThrow(/still unhealthy/)
+  })
+
+  it('installDockerLinux tolerates a missing systemctl (non-systemd host)', () => {
+    execSync.mockImplementation((c: string) => {
+      if (c.includes('pgrep')) throw new Error('lock free')
+      if (c.includes('systemctl')) throw new Error('systemctl: not found')
+      return Buffer.from('')
+    })
+    expect(() => installDockerLinux()).not.toThrow()
+  })
+
   it('dockerExec / getContainerLogs / getDockerDiskUsage build their commands', () => {
     dockerExec('learnhouse-app-x', 'env')
     expect(cmd()).toBe('docker exec learnhouse-app-x env')
