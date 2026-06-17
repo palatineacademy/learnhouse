@@ -761,6 +761,16 @@ describe('command success paths', () => {
     await expect(deploymentsCommand()).resolves.toBeUndefined()
   })
 
+  it('deployments "view" renders detail when a deployment exists', async () => {
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockImplementation(((cmd: string) =>
+      cmd.includes('docker ps')
+        ? Buffer.from('learnhouse-app-dep1\tUp 2 hours\tghcr.io/learnhouse/app:1.4.2\n')
+        : Buffer.from('')) as never)
+    H.q.select.push('view')
+    await expect(deploymentsCommand()).resolves.toBeUndefined()
+  })
+
   it('logs streams via docker compose when services are present', async () => {
     const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
     m.mockImplementation(((cmd: string) =>
@@ -920,6 +930,27 @@ describe('setup / update in-process', () => {
     // fetch already rejects (beforeEach) → resolveTag false for both name and v-prefix.
     await expect(updateCommand({ version: '0.0.0-nope', backup: false, migrate: false }))
       .rejects.toBeInstanceOf(ProcessExit)
+  })
+
+  it('update with migration runs alembic (no-op when already at head)', async () => {
+    seedInstall(path.join(home, '.learnhouse', 'test'))
+    // execSync '' → alembic current == heads (both empty) → already-at-head success.
+    await expect(updateCommand({ backup: false, migrate: true })).resolves.toBeUndefined()
+  })
+
+  it('EE update aborts when the default pre-upgrade backup fails', async () => {
+    const dir = path.join(home, '.learnhouse', 'ee')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'learnhouse.config.json'), JSON.stringify({
+      version: '1.4.0', deploymentId: 'dep1', createdAt: '2026-01-01T00:00:00Z',
+      installDir: dir, domain: 'learn.school.dev', httpPort: 443,
+      useHttps: true, autoSsl: true, useExternalDb: false, orgSlug: 'default',
+      edition: 'enterprise', eeTenancy: 'single',
+    }))
+    fs.writeFileSync(path.join(dir, '.env'), 'DOMAIN=learn.school.dev\n')
+    fs.writeFileSync(path.join(dir, 'docker-compose.yml'), 'name: learnhouse-dep1\nservices:\n  api:\n    image: x\n')
+    // Default backup ON; execSync writes no dump → backup fails → EE update aborts.
+    await expect(updateCommand({ migrate: false })).rejects.toBeInstanceOf(ProcessExit)
   })
 
   it('setup --ci rejects a short password before writing anything', async () => {
