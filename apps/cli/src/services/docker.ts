@@ -62,7 +62,7 @@ export function dockerLogin(registry: string, username: string, password: string
 
 /** Run a command inside a compose service (no TTY). Returns combined stdout. */
 export function dockerComposeExec(cwd: string, service: string, command: string): string {
-  return execSync(`docker compose exec -T ${service} ${command}`, {
+  return execSync(`docker compose exec ${service} ${command}`, {
     cwd,
     stdio: 'pipe',
   }).toString()
