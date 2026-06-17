@@ -11,7 +11,8 @@ import { writeConfig, readConfig, findInstallDir, listInstallations } from '../s
 import { patchComposeAddContentVolume, migrateContentVolume } from '../src/services/content-volume-migration.js'
 import { validateEmail, validatePassword, validateDomain, validatePort, validateSlug, validateRequired } from '../src/utils/validators.js'
 import { quoteEnvValue } from '../src/utils/env-quote.js'
-import { parsePostgresUrl, parseRedisUrl } from '../src/utils/network.js'
+import { parsePostgresUrl, parseRedisUrl, getPublicIp, checkPort, findAvailablePort, checkTcpConnection } from '../src/utils/network.js'
+import net from 'node:net'
 import { resolveAppImage } from '../src/services/version-check.js'
 import { autoDetectDeploymentId, listDeploymentContainers, getContainerRestartCount } from '../src/services/docker.js'
 import { readEnvVar, setEnvVar, isExternalDbInstall, ensureAlembicBaseline, runAlembicUpgrade } from '../src/commands/update-ee.js'
@@ -2068,5 +2069,110 @@ describe('migrateContentVolume', () => {
     const patched = fs.readFileSync(path.join(dir, 'docker-compose.yml'), 'utf-8')
     expect(patched).toContain('learnhouse_content_dep12345:/app/api/content')
     expect(patched).toMatch(/^volumes:/m)
+  })
+})
+
+// ─── network — port probing & public IP (real sockets) ─────
+//
+// setup uses these to pick a free HTTP port and to reach external DB/Redis.
+// Tested against real loopback sockets (deterministic, no external network)
+// and a mocked fetch for the public-IP lookup.
+
+describe('network — port and connectivity probes', () => {
+  const close = (s: net.Server) => new Promise<void>((r) => s.close(() => r()))
+
+  // Bind on the SAME interface checkPort uses (host omitted) so occupancy
+  // genuinely conflicts. Returns the live server + its port.
+  function occupyAny(port?: number): Promise<{ server: net.Server; port: number }> {
+    return new Promise((resolve, reject) => {
+      const server = net.createServer()
+      server.once('error', reject)
+      server.listen(port ?? 0, () => {
+        resolve({ server, port: (server.address() as net.AddressInfo).port })
+      })
+    })
+  }
+  // A port that is currently free (bound then released, same binding as checkPort).
+  async function freePort(): Promise<number> {
+    const { server, port } = await occupyAny()
+    await close(server)
+    return port
+  }
+
+  describe('checkPort', () => {
+    it('returns false while a port is in use and true once it is free', async () => {
+      const { server, port } = await occupyAny()
+      expect(await checkPort(port)).toBe(false) // held by our server
+      await close(server)
+      expect(await checkPort(port)).toBe(true)  // now free
+    })
+  })
+
+  describe('findAvailablePort', () => {
+    it('returns the preferred port when it is free', async () => {
+      const port = await freePort()
+      expect(await findAvailablePort(port, [])).toBe(port)
+    })
+
+    it('falls back to the first free candidate when preferred is taken', async () => {
+      const taken = await occupyAny()
+      const candidate = await freePort()
+      const result = await findAvailablePort(taken.port, [candidate])
+      expect(result).toBe(candidate)
+      await close(taken.server)
+    })
+
+    it('returns null when preferred and every candidate are taken', async () => {
+      const a = await occupyAny()
+      const b = await occupyAny()
+      expect(await findAvailablePort(a.port, [b.port])).toBeNull()
+      await close(a.server); await close(b.server)
+    })
+  })
+
+  describe('checkTcpConnection', () => {
+    // This one needs a real accepted connection, so bind loopback explicitly.
+    function listenLoopback(): Promise<{ server: net.Server; port: number }> {
+      return new Promise((resolve) => {
+        const server = net.createServer()
+        server.listen(0, '127.0.0.1', () =>
+          resolve({ server, port: (server.address() as net.AddressInfo).port }))
+      })
+    }
+
+    it('connects to a listening socket', async () => {
+      const { server, port } = await listenLoopback()
+      expect(await checkTcpConnection('127.0.0.1', port, 2000)).toBe(true)
+      await close(server)
+    })
+
+    it('fails on a closed port', async () => {
+      const { server, port } = await listenLoopback()
+      await close(server) // nothing listening now
+      expect(await checkTcpConnection('127.0.0.1', port, 2000)).toBe(false)
+    })
+  })
+
+  describe('getPublicIp', () => {
+    afterEach(() => { vi.restoreAllMocks() })
+
+    it('returns the first source that yields a valid IPv4', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response('203.0.113.7\n', { status: 200 }),
+      )
+      expect(await getPublicIp()).toBe('203.0.113.7')
+    })
+
+    it('skips non-IP responses and returns null when nothing valid is found', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response('<html>not an ip</html>', { status: 200 }),
+      )
+      expect(await getPublicIp()).toBeNull()
+    })
+
+    it('returns null when every source errors', async () => {
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'))
+      expect(await getPublicIp()).toBeNull()
+    })
   })
 })

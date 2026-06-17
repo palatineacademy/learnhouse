@@ -13,7 +13,7 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "prepublishOnly": "tsup",
-    "test": "bun run build && vitest run tests/unit.test.ts tests/ee.test.ts",
+    "test": "bun run build && vitest run tests/unit.test.ts tests/ee.test.ts tests/commands.test.ts",
     "test:integration": "bun run build && vitest run tests/integration.test.ts",
     "test:all": "bun run build && vitest run",
     "version:patch": "node scripts/bump-version.js patch",
