@@ -90,7 +90,7 @@ import { printBanner } from '../src/ui/banner.js'
 import { setupCommand } from '../src/commands/setup.js'
 import { checkPrerequisites } from '../src/prompts/prerequisites.js'
 import { setupEnterprise } from '../src/commands/setup-ee.js'
-import { dockerLogin, dockerComposeLogs, dockerLogsMulti } from '../src/services/docker.js'
+import { dockerLogin, dockerComposeLogs, dockerLogsMulti, dockerExecInteractive } from '../src/services/docker.js'
 
 // ─── Command guards — every entry point must bail cleanly with no install ──
 //
@@ -1349,5 +1349,16 @@ describe('docker log streamers', () => {
     expect(spawnMock).toHaveBeenCalledTimes(2)
     expect(spawnMock.mock.calls[0][1]).toContain('learnhouse-app-dep1')
     expect(spawnMock.mock.calls[1][1]).toContain('learnhouse-db-dep1')
+  })
+
+  it('dockerExecInteractive runs  and records the exit code', async () => {
+    const ss = (await import('node:child_process')).spawnSync as unknown as ReturnType<typeof vi.fn>
+    ss.mockReturnValue({ status: 0, stdout: Buffer.from(''), stderr: Buffer.from('') })
+    const prev = process.exitCode
+    dockerExecInteractive('learnhouse-app-dep1', '/bin/sh')
+    const call = ss.mock.calls.at(-1) as [string, string[]]
+    expect(call[0]).toBe('docker')
+    expect(call[1].slice(0, 4)).toEqual(['exec', '-it', 'learnhouse-app-dep1', '/bin/sh'])
+    process.exitCode = prev
   })
 })

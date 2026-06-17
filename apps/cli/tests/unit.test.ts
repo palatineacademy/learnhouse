@@ -2266,6 +2266,20 @@ describe('docker.ts command builders', () => {
     expect(cmds.some((c) => c.includes('sh /tmp/get-docker.sh'))).toBe(true)
   })
 
+  it('installDockerLinux retries the script once after a transient failure', () => {
+    let shAttempts = 0
+    execSync.mockImplementation((c: string) => {
+      if (c.includes('pgrep')) throw new Error('lock free')
+      if (c.includes('sh /tmp/get-docker.sh')) {
+        shAttempts++
+        if (shAttempts === 1) throw new Error('dpkg was locked') // first run fails → retry
+      }
+      return Buffer.from('')
+    })
+    expect(() => installDockerLinux()).not.toThrow()
+    expect(shAttempts).toBe(2) // ran the installer twice (initial + retry)
+  })
+
   it('dockerComposePs runs `docker compose ps` in cwd', () => {
     dockerComposePs('/srv/lh')
     expect(cmd()).toBe('docker compose ps')
