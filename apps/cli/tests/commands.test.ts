@@ -882,6 +882,17 @@ describe('setup / update in-process', () => {
       .toContain('LEARNHOUSE_INITIAL_ADMIN_EMAIL=admin@school.dev')
   })
 
+  it('the interactive wizard can start services after generating (startNow=yes)', async () => {
+    H.q.select.push('community', 'stable', 'continue', 'local', 'ai', 'local', 'continue', 'continue', 'continue', 'confirm')
+    H.q.text.push('started', 'localhost', '8094', 'Test Org', 'default', 'admin@school.dev')
+    H.q.password.push('adminpassword123')
+    H.q.confirm.push(true, true) // db ack = yes; start now = YES (mocked docker + health)
+    H.q.multiselect.push([])
+
+    await setupCommand({})
+    expect(fs.existsSync(path.join(home, '.learnhouse', 'started', 'docker-compose.yml'))).toBe(true)
+  })
+
   it('setup --ci with start surfaces a port-conflict and exits', async () => {
     const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
     m.mockImplementation(((cmd: string) => {
