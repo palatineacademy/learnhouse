@@ -1169,6 +1169,8 @@ describe('setup / update in-process', () => {
     fs.writeFileSync(path.join(dir, 'docker-compose.yml'),
       'name: learnhouse-dep1\nservices:\n  learnhouse-app:\n    image: ghcr.io/learnhouse/app:1.4.0\n    container_name: learnhouse-app-dep1\n    networks:\n      - n\nnetworks:\n  n:\n')
 
+    // EE readiness probe reports a non-ee state → the flow warns but completes.
+    healthMock.waitForEeReady.mockResolvedValue('timeout')
     // --no-backup avoids the pg_dump (mocked execSync writes no file); --no-migrate
     // avoids alembic. waitForHealth is stubbed. The flow should complete.
     await expect(updateCommand({ backup: false, migrate: false })).resolves.toBeUndefined()
