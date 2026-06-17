@@ -14,7 +14,7 @@ import { quoteEnvValue } from '../src/utils/env-quote.js'
 import { parsePostgresUrl, parseRedisUrl, getPublicIp, checkPort, findAvailablePort, checkTcpConnection } from '../src/utils/network.js'
 import net from 'node:net'
 import { resolveAppImage } from '../src/services/version-check.js'
-import { waitForHealth, waitForOrgSeed } from '../src/services/health.js'
+import { waitForHealth, waitForOrgSeed, waitForEeReady } from '../src/services/health.js'
 import { checkForUpdates } from '../src/services/version-check.js'
 import { autoDetectDeploymentId, listDeploymentContainers, getContainerRestartCount, isDockerInstalled, isDockerRunning, dockerComposeWorks, dockerComposePs, dockerExecToFile, dockerExecFromFile, dockerStats, dockerStatsForContainers, dockerExec, getContainerLogs, getDockerDiskUsage, isTcpPortListening, dockerComposeUpRetry } from '../src/services/docker.js'
 import { readEnvVar, setEnvVar, isExternalDbInstall, ensureAlembicBaseline, runAlembicUpgrade } from '../src/commands/update-ee.js'
@@ -2193,6 +2193,12 @@ describe('health pollers', () => {
   it('waitForOrgSeed resolves true once the org endpoint returns ok', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"slug":"default"}', { status: 200 }))
     expect(await waitForOrgSeed('http://localhost:8080', 'default')).toBe(true)
+  })
+
+  it('waitForEeReady returns ee when the api reports mode: ee', async () => {
+    const docker = await import('../src/services/docker.js')
+    vi.mocked(docker.dockerComposeExec).mockReturnValue('{"mode":"ee"}')
+    expect(await waitForEeReady('/srv/lh')).toBe('ee')
   })
 })
 
