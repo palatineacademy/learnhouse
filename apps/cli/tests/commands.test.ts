@@ -48,12 +48,13 @@ vi.mock('@clack/prompts', () => H.mock)
 vi.mock('../src/utils/prompt.js', () => H.mock)
 
 // Health pollers would otherwise hit real URLs / exec on a 3-minute timeout —
-// stub them so setup/update can run their full body in-process without hanging.
-vi.mock('../src/services/health.js', () => ({
-  waitForHealth: async () => true,
-  waitForOrgSeed: async () => true,
-  waitForEeReady: async () => 'ee',
+// stub them (overridable per test) so setup/update run in-process without hanging.
+const healthMock = vi.hoisted(() => ({
+  waitForHealth: vi.fn(async () => true),
+  waitForOrgSeed: vi.fn(async () => true),
+  waitForEeReady: vi.fn(async () => 'ee' as const),
 }))
+vi.mock('../src/services/health.js', () => healthMock)
 
 import { configCommand } from '../src/commands/config.js'
 import { statusCommand } from '../src/commands/status.js'
@@ -821,6 +822,9 @@ describe('setup / update in-process', () => {
     }) as never)
     // resolveAppImage hits GitHub/GHCR — force the offline fallback to :latest.
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'))
+    healthMock.waitForHealth.mockResolvedValue(true)
+    healthMock.waitForOrgSeed.mockResolvedValue(true)
+    healthMock.waitForEeReady.mockResolvedValue('ee')
     const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
     m.mockReset(); m.mockReturnValue(Buffer.from(''))
   })
@@ -901,6 +905,16 @@ describe('setup / update in-process', () => {
     const cfg = JSON.parse(fs.readFileSync(
       path.join(home, '.learnhouse', 'edited-install', 'learnhouse.config.json'), 'utf-8'))
     expect(cfg.orgSlug).toBe('edited')
+  })
+
+  it('the wizard start path exits when the org never seeds', async () => {
+    healthMock.waitForOrgSeed.mockResolvedValue(false) // DB up but org seed never appears
+    H.q.select.push('community', 'stable', 'continue', 'local', 'ai', 'local', 'continue', 'continue', 'continue', 'confirm')
+    H.q.text.push('noseed', 'localhost', '8098', 'Test Org', 'default', 'admin@school.dev')
+    H.q.password.push('adminpassword123')
+    H.q.confirm.push(true, true) // start now = yes
+    H.q.multiselect.push([])
+    await expect(setupCommand({})).rejects.toBeInstanceOf(ProcessExit)
   })
 
   it('the interactive wizard can start services after generating (startNow=yes)', async () => {
