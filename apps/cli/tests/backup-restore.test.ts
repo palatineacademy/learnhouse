@@ -131,6 +131,13 @@ describe('backup / restore — real tar, stubbed database', () => {
     await expect(backupCommand()).rejects.toBeInstanceOf(ProcessExit)
   })
 
+  it('restore exits when the database container is not running', async () => {
+    dockerMock.isContainerRunning.mockReturnValue(false)
+    const dummy = path.join(installDir, 'dummy.tar.gz')
+    fs.writeFileSync(dummy, 'x')
+    await expect(restoreCommand(dummy)).rejects.toBeInstanceOf(ProcessExit)
+  })
+
   it('restore exits when no deployment id can be resolved', async () => {
     fs.writeFileSync(path.join(installDir, 'learnhouse.config.json'), JSON.stringify({
       version: '1.4.8', createdAt: '2026-01-01T00:00:00Z', // no deploymentId
