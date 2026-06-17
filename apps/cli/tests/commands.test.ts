@@ -372,6 +372,18 @@ describe('interactive command flows', () => {
     expect(parseMemLimit(path.join(installDir, 'docker-compose.yml')).get('learnhouse-app')).toBe('512m')
   })
 
+  it('deployments → scale shows live stats when available', async () => {
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockImplementation(((cmd: string) =>
+      cmd.includes('stats')
+        ? Buffer.from('NAME\tCPU\tMEM\nlearnhouse-app-dep1\t5%\t200MiB\n')
+        : Buffer.from('')) as never)
+    H.q.select.push('scale')
+    H.q.text.push('512m', '1g', '256m')
+    H.q.confirm.push(false)
+    await expect(deploymentsCommand()).resolves.toBeUndefined()
+  })
+
   it('env appends a previously-missing variable to .env', async () => {
     // NEXTAUTH_URL is in the domain category but absent from the fixture .env.
     H.q.select.push('domain', 'NEXTAUTH_URL', '_done')
