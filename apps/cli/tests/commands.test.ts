@@ -1072,6 +1072,18 @@ describe('setup / update in-process', () => {
       .toContain('ghcr.io/learnhouse/app:latest')
   })
 
+  it('setup --ci EE agency tenancy generates wildcard-domain files', async () => {
+    await setupEnterprise({
+      ci: true, name: 'ee-agency', license: 'lh_live_TESTKEY',
+      domain: 'apps.school.dev', adminEmail: 'admin@school.dev',
+      adminPassword: 'password123', tenancy: 'agency', start: false,
+    })
+    const dir = path.join(home, '.learnhouse', 'ee-agency')
+    const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'learnhouse.config.json'), 'utf-8'))
+    expect(cfg.eeTenancy).toBe('agency')
+    expect(fs.readFileSync(path.join(dir, 'docker-compose.yml'), 'utf-8')).toContain('multi')
+  })
+
   it('the interactive EE wizard generates an enterprise install', async () => {
     H.q.select.push('single')                                   // tenancy
     H.q.password.push('lh_live_TESTKEY', 'password123')         // license, admin password

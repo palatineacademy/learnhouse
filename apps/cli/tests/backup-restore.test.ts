@@ -118,6 +118,18 @@ describe('backup / restore — real tar, stubbed database', () => {
     await expect(backupCommand()).rejects.toBeInstanceOf(ProcessExit)
   })
 
+  it('backup and restore refuse an external database', async () => {
+    fs.writeFileSync(path.join(installDir, 'learnhouse.config.json'), JSON.stringify({
+      version: '1.4.8', deploymentId: 'dep1', createdAt: '2026-01-01T00:00:00Z',
+      installDir, domain: 'localhost', httpPort: 8080,
+      useHttps: false, autoSsl: false, useExternalDb: true, orgSlug: 'default',
+    }))
+    await expect(backupCommand()).rejects.toBeInstanceOf(ProcessExit)
+    const dummy = path.join(installDir, 'dummy.tar.gz')
+    fs.writeFileSync(dummy, 'x') // exists → restore reaches the external-db guard
+    await expect(restoreCommand(dummy)).rejects.toBeInstanceOf(ProcessExit)
+  })
+
   it('restore also restores the .env when the user confirms', async () => {
     await backupCommand()
     const backupsDir = path.join(installDir, 'backups')
