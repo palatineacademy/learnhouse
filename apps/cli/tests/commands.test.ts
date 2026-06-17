@@ -1212,6 +1212,29 @@ describe('setup / update in-process', () => {
     expect(fs.readFileSync(path.join(dir, 'docker-compose.yml'), 'utf-8')).toContain('multi')
   })
 
+  it('EE interactive overwrites an existing install when confirmed', async () => {
+    const dir = path.join(home, '.learnhouse', 'ee-int')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, '.env'), 'X=1\n') // firstDeploy=false → overwrite prompt
+    H.q.select.push('single')
+    H.q.password.push('lh_live_TESTKEY', 'password123')
+    H.q.text.push('learn.school.dev', 'ops@school.dev', 'admin@school.dev')
+    H.q.confirm.push(false, true, false) // localTls=no, overwrite=YES, startNow=no
+    await setupEnterprise({ name: 'ee-int' })
+    expect(fs.existsSync(path.join(dir, 'docker-compose.yml'))).toBe(true)
+  })
+
+  it('EE interactive cancels when the overwrite is declined', async () => {
+    const dir = path.join(home, '.learnhouse', 'ee-int2')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, '.env'), 'X=1\n')
+    H.q.select.push('single')
+    H.q.password.push('lh_live_TESTKEY', 'password123')
+    H.q.text.push('learn.school.dev', 'ops@school.dev', 'admin@school.dev')
+    H.q.confirm.push(false, false) // localTls=no, overwrite=NO → exit(0)
+    await expect(setupEnterprise({ name: 'ee-int2' })).rejects.toBeInstanceOf(ProcessExit)
+  })
+
   it('the interactive EE wizard generates an enterprise install', async () => {
     H.q.select.push('single')                                   // tenancy
     H.q.password.push('lh_live_TESTKEY', 'password123')         // license, admin password
