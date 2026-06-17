@@ -90,6 +90,7 @@ import { printBanner } from '../src/ui/banner.js'
 import { setupCommand } from '../src/commands/setup.js'
 import { checkPrerequisites } from '../src/prompts/prerequisites.js'
 import { setupEnterprise } from '../src/commands/setup-ee.js'
+import { dockerLogin } from '../src/services/docker.js'
 
 // ─── Command guards — every entry point must bail cleanly with no install ──
 //
@@ -1152,5 +1153,30 @@ describe('checkPrerequisites', () => {
   it('exits when Docker is missing', async () => {
     execSyncMock.mockImplementation(() => { throw new Error('docker: command not found') })
     await expect(checkPrerequisites()).rejects.toBeInstanceOf(ProcessExit)
+  })
+})
+
+// ─── dockerLogin — registry auth via spawnSync (password on stdin) ──
+
+describe('dockerLogin', () => {
+  let spawnSyncMock: ReturnType<typeof vi.fn>
+  beforeEach(async () => {
+    spawnSyncMock = (await import('node:child_process')).spawnSync as unknown as ReturnType<typeof vi.fn>
+    spawnSyncMock.mockReset()
+  })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('passes the password over stdin and succeeds on status 0', () => {
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: Buffer.from(''), stderr: Buffer.from('') })
+    expect(() => dockerLogin('images.example.app', 'license', 'lh_live_x')).not.toThrow()
+    const [bin, args, opts] = spawnSyncMock.mock.calls.at(-1) as [string, string[], { input: string }]
+    expect(bin).toBe('docker')
+    expect(args).toContain('--password-stdin')
+    expect(opts.input).toBe('lh_live_x') // never on the command line
+  })
+
+  it('throws with the registry name when login fails', () => {
+    spawnSyncMock.mockReturnValue({ status: 1, stdout: Buffer.from(''), stderr: Buffer.from('unauthorized') })
+    expect(() => dockerLogin('images.example.app', 'license', 'bad')).toThrow(/images\.example\.app/)
   })
 })
