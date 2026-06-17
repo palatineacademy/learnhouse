@@ -2200,6 +2200,43 @@ describe('health pollers', () => {
     vi.mocked(docker.dockerComposeExec).mockReturnValue('{"mode":"ee"}')
     expect(await waitForEeReady('/srv/lh')).toBe('ee')
   })
+
+  it('waitForHealth returns false after the deadline when never healthy', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('connection refused'))
+      const promise = waitForHealth('http://localhost:8080')
+      await vi.advanceTimersByTimeAsync(200_000) // fast-forward past the 3-minute deadline
+      expect(await promise).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('waitForOrgSeed returns false after the deadline when the org never seeds', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('no org yet'))
+      const promise = waitForOrgSeed('http://localhost:8080', 'default')
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(await promise).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('waitForEeReady reports oss / timeout when the api never reports ee', async () => {
+    vi.useFakeTimers()
+    try {
+      const docker = await import('../src/services/docker.js')
+      vi.mocked(docker.dockerComposeExec).mockReturnValue('{"mode":"oss"}') // came up but not licensed
+      const promise = waitForEeReady('/srv/lh')
+      await vi.advanceTimersByTimeAsync(400_000) // past the EE-ready deadline
+      expect(await promise).toBe('oss')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 // ─── docker.ts — command construction for the remaining helpers ──
