@@ -18,7 +18,8 @@
     "test:all": "bun run build && vitest run",
     "version:patch": "node scripts/bump-version.js patch",
     "version:minor": "node scripts/bump-version.js minor",
-    "version:major": "node scripts/bump-version.js major"
+    "version:major": "node scripts/bump-version.js major",
+    "test:coverage": "bun run build && vitest run --coverage --coverage.provider=v8 --coverage.include='src/**' tests/unit.test.ts tests/ee.test.ts tests/commands.test.ts"
   },
   "repository": {
     "type": "git",
@@ -41,6 +42,7 @@
   "author": "LearnHouse",
   "devDependencies": {
     "@types/node": "^25.0.0",
+    "@vitest/coverage-v8": "^4",
     "tsup": "^8.0.1",
     "typescript": "^6.0.0",
     "vitest": "^4.1.1"

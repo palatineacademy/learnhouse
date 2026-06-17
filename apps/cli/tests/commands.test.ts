@@ -4,10 +4,21 @@ import os from 'node:os'
 import path from 'node:path'
 
 // Docker helpers shell out via execSync — stub it so guard-path tests never
-// touch a real daemon. spawn/spawnSync stay real (importActual).
+// touch a real daemon. spawn returns a fake long-lived child (so the dev
+// happy-path can reach its keep-alive without launching real servers);
+// spawnSync reports success (dependency installs are no-ops).
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process')
-  return { ...actual, execSync: vi.fn(() => Buffer.from('')) }
+  const fakeChild = () => {
+    const stream = { on: () => {} }
+    return { stdout: stream, stderr: stream, on: () => {}, kill: () => {}, killed: false, exitCode: null, pid: 1 }
+  }
+  return {
+    ...actual,
+    execSync: vi.fn(() => Buffer.from('')),
+    spawn: vi.fn(() => fakeChild()),
+    spawnSync: vi.fn(() => ({ status: 0, stdout: Buffer.from(''), stderr: Buffer.from('') })),
+  }
 })
 
 // Replace both prompt modules with programmable stubs: logs/intro/spinner are
@@ -35,6 +46,14 @@ const H = vi.hoisted(() => {
 vi.mock('@clack/prompts', () => H.mock)
 vi.mock('../src/utils/prompt.js', () => H.mock)
 
+// Health pollers would otherwise hit real URLs / exec on a 3-minute timeout —
+// stub them so setup/update can run their full body in-process without hanging.
+vi.mock('../src/services/health.js', () => ({
+  waitForHealth: async () => true,
+  waitForOrgSeed: async () => true,
+  waitForEeReady: async () => 'ee',
+}))
+
 import { configCommand } from '../src/commands/config.js'
 import { statusCommand } from '../src/commands/status.js'
 import { startCommand } from '../src/commands/start.js'
@@ -56,6 +75,8 @@ import { promptFeatures } from '../src/prompts/features.js'
 import { promptDatabase } from '../src/prompts/database.js'
 import { checkDevEnv } from '../src/services/env-check.js'
 import { devCommand } from '../src/commands/dev.js'
+import { printBanner } from '../src/ui/banner.js'
+import { setupCommand } from '../src/commands/setup.js'
 
 // ─── Command guards — every entry point must bail cleanly with no install ──
 //
@@ -478,5 +499,184 @@ describe('dev command guards', () => {
     execSyncMock.mockImplementation(() => { throw new Error('docker: command not found') })
     await expect(devCommand({ adminEmail: 'a@b.dev', adminPassword: 'pw' }))
       .rejects.toBeInstanceOf(ProcessExit)
+  })
+
+  it('starts all three servers and enters the keep-alive loop (happy path)', async () => {
+    const root = fakeRepo(true)
+    // Pre-create dep dirs so the bun/uv install steps are skipped.
+    for (const d of ['apps/web/node_modules', 'apps/collab/node_modules', 'apps/api/.venv']) {
+      fs.mkdirSync(path.join(root, d), { recursive: true })
+    }
+    process.chdir(root)
+    // execSync '' → docker installed/running, infra up, and health checks pass.
+
+    const cp = await import('node:child_process')
+    const spawnMock = cp.spawn as unknown as ReturnType<typeof vi.fn>
+    spawnMock.mockClear()
+
+    const sigintBefore = process.listenerCount('SIGINT')
+    // devCommand never resolves — it ends in `await new Promise(() => {})`.
+    const promise = devCommand({ adminEmail: 'a@b.dev', adminPassword: 'pw' })
+    promise.catch(() => {}) // guard against an unhandled rejection if it ever errors
+    await new Promise((r) => setTimeout(r, 150)) // let the async flow run to the keep-alive
+
+    // api + web + collab were each spawned…
+    expect(spawnMock).toHaveBeenCalledTimes(3)
+    // …and devCommand is parked in the keep-alive (still pending, never settled).
+    const outcome = await Promise.race([
+      promise.then(() => 'settled', () => 'settled'),
+      new Promise((r) => setTimeout(() => r('pending'), 50)),
+    ])
+    expect(outcome).toBe('pending')
+
+    // Clean up the SIGINT/SIGTERM handlers devCommand attached.
+    const handlers = process.listeners('SIGINT').slice(sigintBefore)
+    for (const h of handlers) process.removeListener('SIGINT', h as never)
+    for (const h of process.listeners('SIGTERM')) process.removeListener('SIGTERM', h as never)
+  })
+})
+
+// ─── Command success paths (full body, fixture install) ─────────
+//
+// Drives the read-mostly commands past their guards against a fixture
+// install with docker calls stubbed, so their entire body executes
+// in-process (the integration suite runs them as a subprocess, which
+// in-process coverage can't see).
+
+describe('command success paths', () => {
+  let home: string
+  let installDir: string
+  let origHome: string | undefined
+
+  beforeEach(async () => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-ok-'))
+    installDir = path.join(home, '.learnhouse', 'test')
+    fs.mkdirSync(installDir, { recursive: true })
+    fs.writeFileSync(path.join(installDir, 'learnhouse.config.json'), JSON.stringify({
+      version: '1.4.8', deploymentId: 'dep1', createdAt: '2026-01-01T00:00:00Z',
+      installDir, domain: 'localhost', httpPort: 8080,
+      useHttps: false, autoSsl: false, useExternalDb: false, orgSlug: 'default',
+    }))
+    fs.writeFileSync(path.join(installDir, '.env'), 'LEARNHOUSE_DOMAIN=localhost\nHTTP_PORT=8080\n')
+    fs.writeFileSync(path.join(installDir, 'docker-compose.yml'), 'name: learnhouse-dep1\nservices:\n  learnhouse-app:\n    container_name: learnhouse-app-dep1\n')
+    origHome = process.env.HOME
+    process.env.HOME = home
+    H.reset()
+    vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new ProcessExit(code ?? 0)
+    }) as never)
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockReset(); m.mockReturnValue(Buffer.from(''))
+  })
+
+  afterEach(() => {
+    if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome
+    fs.rmSync(home, { recursive: true, force: true })
+    H.reset()
+    vi.restoreAllMocks()
+  })
+
+  it('config prints the installation details and returns', async () => {
+    await expect(configCommand()).resolves.toBeUndefined()
+  })
+
+  it('status renders compose ps output and returns', async () => {
+    await expect(statusCommand()).resolves.toBeUndefined()
+  })
+
+  it('start migrates content and brings services up', async () => {
+    await expect(startCommand()).resolves.toBeUndefined()
+  })
+
+  it('stop brings services down', async () => {
+    await expect(stopCommand()).resolves.toBeUndefined()
+  })
+
+  it('health runs every probe and completes', async () => {
+    await expect(healthCommand()).resolves.toBeUndefined()
+  })
+
+  it('deployments "view" lists deployments and returns', async () => {
+    H.q.select.push('view')
+    await expect(deploymentsCommand()).resolves.toBeUndefined()
+  })
+
+  it('printBanner renders without error', async () => {
+    await expect(printBanner()).resolves.toBeUndefined()
+  })
+})
+
+// ─── setup + update full bodies (in-process, mocked docker/health) ──
+//
+// These run the orchestration that the integration suite exercises as a
+// subprocess — driven here in-process so the bodies are measurably covered.
+
+describe('setup / update in-process', () => {
+  let home: string
+  let origHome: string | undefined
+
+  beforeEach(async () => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-setup-'))
+    origHome = process.env.HOME
+    process.env.HOME = home
+    H.reset()
+    vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new ProcessExit(code ?? 0)
+    }) as never)
+    // resolveAppImage hits GitHub/GHCR — force the offline fallback to :latest.
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'))
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockReset(); m.mockReturnValue(Buffer.from(''))
+  })
+
+  afterEach(() => {
+    if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome
+    fs.rmSync(home, { recursive: true, force: true })
+    H.reset()
+    vi.restoreAllMocks()
+  })
+
+  it('setup --ci --no-start generates a complete install', async () => {
+    await setupCommand({
+      ci: true, name: 'unit', domain: 'localhost', port: 8090,
+      adminEmail: 'admin@school.dev', adminPassword: 'password123',
+      orgName: 'Test Org', orgSlug: 'default', start: false,
+    })
+    const dir = path.join(home, '.learnhouse', 'unit')
+    expect(fs.existsSync(path.join(dir, 'docker-compose.yml'))).toBe(true)
+    expect(fs.existsSync(path.join(dir, '.env'))).toBe(true)
+    expect(fs.existsSync(path.join(dir, 'learnhouse.config.json'))).toBe(true)
+    expect(fs.readFileSync(path.join(dir, '.env'), 'utf-8'))
+      .toContain('LEARNHOUSE_INITIAL_ADMIN_EMAIL=admin@school.dev')
+  })
+
+  it('setup --ci rejects a short password before writing anything', async () => {
+    await expect(setupCommand({
+      ci: true, name: 'bad', domain: 'localhost', port: 8090,
+      adminEmail: 'admin@school.dev', adminPassword: 'short', start: false,
+    })).rejects.toBeInstanceOf(ProcessExit)
+    expect(fs.existsSync(path.join(home, '.learnhouse', 'bad'))).toBe(false)
+  })
+
+  it('update runs the full upgrade flow against a fixture install', async () => {
+    // Seed an install for findInstallDir/readConfig to pick up.
+    const dir = path.join(home, '.learnhouse', 'test')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'learnhouse.config.json'), JSON.stringify({
+      version: '1.4.0', deploymentId: 'dep1', createdAt: '2026-01-01T00:00:00Z',
+      installDir: dir, domain: 'localhost', httpPort: 8080,
+      useHttps: false, autoSsl: false, useExternalDb: false, orgSlug: 'default',
+    }))
+    fs.writeFileSync(path.join(dir, '.env'), 'LEARNHOUSE_DOMAIN=localhost\n')
+    fs.writeFileSync(path.join(dir, 'docker-compose.yml'),
+      'name: learnhouse-dep1\nservices:\n  learnhouse-app:\n    image: ghcr.io/learnhouse/app:1.4.0\n    container_name: learnhouse-app-dep1\n    networks:\n      - n\nnetworks:\n  n:\n')
+
+    // --no-backup avoids the pg_dump (mocked execSync writes no file); --no-migrate
+    // avoids alembic. waitForHealth is stubbed. The flow should complete.
+    await expect(updateCommand({ backup: false, migrate: false })).resolves.toBeUndefined()
+
+    // The compose tag was rewritten to :latest (offline fallback).
+    expect(fs.readFileSync(path.join(dir, 'docker-compose.yml'), 'utf-8'))
+      .toContain('ghcr.io/learnhouse/app:latest')
   })
 })

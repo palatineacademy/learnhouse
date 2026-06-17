@@ -14,6 +14,7 @@ import { quoteEnvValue } from '../src/utils/env-quote.js'
 import { parsePostgresUrl, parseRedisUrl, getPublicIp, checkPort, findAvailablePort, checkTcpConnection } from '../src/utils/network.js'
 import net from 'node:net'
 import { resolveAppImage } from '../src/services/version-check.js'
+import { waitForHealth, waitForOrgSeed } from '../src/services/health.js'
 import { autoDetectDeploymentId, listDeploymentContainers, getContainerRestartCount } from '../src/services/docker.js'
 import { readEnvVar, setEnvVar, isExternalDbInstall, ensureAlembicBaseline, runAlembicUpgrade } from '../src/commands/update-ee.js'
 import { replaceComposeImageTag } from '../src/services/compose-utils.js'
@@ -2174,5 +2175,22 @@ describe('network — port and connectivity probes', () => {
       vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'))
       expect(await getPublicIp()).toBeNull()
     })
+  })
+})
+
+// ─── services/health — readiness pollers (mocked fetch) ─────
+
+describe('health pollers', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('waitForHealth resolves true as soon as /api/v1/health returns ok', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }))
+    expect(await waitForHealth('http://localhost:8080')).toBe(true)
+    expect(String(spy.mock.calls[0][0])).toBe('http://localhost:8080/api/v1/health')
+  })
+
+  it('waitForOrgSeed resolves true once the org endpoint returns ok', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"slug":"default"}', { status: 200 }))
+    expect(await waitForOrgSeed('http://localhost:8080', 'default')).toBe(true)
   })
 })
