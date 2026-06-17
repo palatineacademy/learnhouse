@@ -495,6 +495,23 @@ describe('setup input prompts', () => {
     }
   })
 
+  it('promptDatabase with external Redis verifies a reachable Redis URL', async () => {
+    const net = await import('node:net')
+    const server = net.createServer()
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
+    const port = (server.address() as { port: number }).port
+    try {
+      H.q.select.push('local', 'ai', 'external') // db local, db image ai, redis external
+      H.q.confirm.push(true)                      // db credential ack
+      H.q.text.push(`redis://127.0.0.1:${port}`)
+      const cfg = await promptDatabase()
+      expect(cfg.useExternalRedis).toBe(true)
+      expect(cfg.externalRedisConnectionString).toContain(`127.0.0.1:${port}`)
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()))
+    }
+  })
+
   it('promptDatabase local path generates a password and honours the AI image choice', async () => {
     H.q.select.push('local', 'ai', 'local') // db setup, db image, redis setup
     H.q.confirm.push(true)                  // acknowledge generated credentials
@@ -862,6 +879,15 @@ describe('setup / update in-process', () => {
       fs.existsSync(path.join(base, d, 'docker-compose.yml')) &&
       fs.existsSync(path.join(base, d, 'Caddyfile')))
     expect(found).toBeTruthy()
+  })
+
+  it('setup --ci --edition enterprise WITH start logs in, pulls and boots EE', async () => {
+    await setupEnterprise({
+      ci: true, name: 'ee-start', license: 'lh_live_TESTKEY',
+      domain: 'learn.school.dev', adminEmail: 'admin@school.dev',
+      adminPassword: 'password123', tenancy: 'single', start: true,
+    })
+    expect(fs.existsSync(path.join(home, '.learnhouse', 'ee-start', 'docker-compose.yml'))).toBe(true)
   })
 
   it('setup --ci --edition enterprise --no-start generates the EE install', async () => {
