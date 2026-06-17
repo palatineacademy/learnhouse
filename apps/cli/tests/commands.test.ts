@@ -704,6 +704,31 @@ describe('dev command guards', () => {
     }
   })
 
+  it('reuses already-running infra (no admin prompts, no infra start)', async () => {
+    const root = fakeRepo(true)
+    for (const d of ['apps/web/node_modules', 'apps/collab/node_modules', 'apps/api/.venv']) {
+      fs.mkdirSync(path.join(root, d), { recursive: true })
+    }
+    process.chdir(root)
+    // isContainerRunning(db/redis) → 'true' → isInfraRunning() true → reuse path.
+    execSyncMock.mockImplementation(((cmd: string) =>
+      cmd.includes('State.Running') ? Buffer.from('true') : Buffer.from('')) as never)
+
+    const cp = await import('node:child_process')
+    const spawnMock = cp.spawn as unknown as ReturnType<typeof vi.fn>
+    spawnMock.mockClear()
+    const sigintBefore = process.listenerCount('SIGINT')
+    try {
+      const promise = devCommand({}) // no admin creds needed when infra already up
+      promise.catch(() => {})
+      await new Promise((r) => setTimeout(r, 150))
+      expect(spawnMock).toHaveBeenCalledTimes(3) // still launches the 3 local servers
+    } finally {
+      for (const h of process.listeners('SIGINT').slice(sigintBefore)) process.removeListener('SIGINT', h as never)
+      for (const h of process.listeners('SIGTERM')) process.removeListener('SIGTERM', h as never)
+    }
+  })
+
   it('starts all three servers and enters the keep-alive loop (happy path)', async () => {
     const root = fakeRepo(true)
     // Pre-create dep dirs so the bun/uv install steps are skipped.
