@@ -873,6 +873,21 @@ describe('command success paths', () => {
     await expect(doctorCommand()).resolves.toBeUndefined()
   })
 
+  it('doctor warns on short secrets and unreadable logs', async () => {
+    fs.writeFileSync(path.join(installDir, '.env'),
+      'LEARNHOUSE_DOMAIN=localhost\nHTTP_PORT=8080\nLEARNHOUSE_AUTH_JWT_SECRET_KEY=abc\n') // too short
+    const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
+    m.mockImplementation(((cmd: string) => {
+      if (cmd.includes('docker ps')) return Buffer.from('learnhouse-app-dep1\tUp 2 hours\tghcr.io/learnhouse/app:1.4.2\n')
+      if (cmd.includes('State.Running')) return Buffer.from('true')
+      if (cmd.includes('RestartCount')) return Buffer.from('0')
+      if (cmd.includes('docker logs')) throw new Error('cannot read logs') // → warn branch
+      if (cmd.includes('{{.Image}}')) return Buffer.from('sha256:abcdef0123456789')
+      return Buffer.from('')
+    }) as never)
+    await expect(doctorCommand()).resolves.toBeUndefined()
+  })
+
   it('doctor reports container errors found in the logs', async () => {
     const m = (await import('node:child_process')).execSync as unknown as ReturnType<typeof vi.fn>
     m.mockImplementation(((cmd: string) => {
