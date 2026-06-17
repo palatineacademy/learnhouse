@@ -337,6 +337,14 @@ describe('interactive command flows', () => {
     expect(fs.readFileSync(path.join(installDir, '.env'), 'utf-8')).toContain('LEARNHOUSE_DOMAIN=localhost')
   })
 
+  it('deployments → scale sets mem limits through the resource menu', async () => {
+    H.q.select.push('scale')          // menu choice
+    H.q.text.push('512m', '1g', '256m') // per-service limits
+    H.q.confirm.push(false)            // no restart
+    await expect(deploymentsCommand()).resolves.toBeUndefined()
+    expect(parseMemLimit(path.join(installDir, 'docker-compose.yml')).get('learnhouse-app')).toBe('512m')
+  })
+
   it('env appends a previously-missing variable to .env', async () => {
     // NEXTAUTH_URL is in the domain category but absent from the fixture .env.
     H.q.select.push('domain', 'NEXTAUTH_URL', '_done')
@@ -741,6 +749,31 @@ describe('setup / update in-process', () => {
     expect(fs.existsSync(path.join(dir, 'learnhouse.config.json'))).toBe(true)
     expect(fs.readFileSync(path.join(dir, '.env'), 'utf-8'))
       .toContain('LEARNHOUSE_INITIAL_ADMIN_EMAIL=admin@school.dev')
+  })
+
+  it('setup --ci WITH start brings services up (mocked docker + health)', async () => {
+    await setupCommand({
+      ci: true, name: 'started', domain: 'localhost', port: 8092,
+      adminEmail: 'admin@school.dev', adminPassword: 'password123',
+      orgName: 'Test', orgSlug: 'default', start: true,
+    })
+    expect(fs.existsSync(path.join(home, '.learnhouse', 'started', 'docker-compose.yml'))).toBe(true)
+  })
+
+  it('update on an enterprise install runs the EE upgrade path', async () => {
+    const dir = path.join(home, '.learnhouse', 'ee')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'learnhouse.config.json'), JSON.stringify({
+      version: '1.4.0', deploymentId: 'dep1', createdAt: '2026-01-01T00:00:00Z',
+      installDir: dir, domain: 'learn.school.dev', httpPort: 443,
+      useHttps: true, autoSsl: true, useExternalDb: false, orgSlug: 'default',
+      edition: 'enterprise', eeTenancy: 'single',
+    }))
+    fs.writeFileSync(path.join(dir, '.env'), 'DOMAIN=learn.school.dev\nLEARNHOUSE_LICENSE_KEY=lh_live_TESTKEY\n')
+    fs.writeFileSync(path.join(dir, 'docker-compose.yml'),
+      'name: learnhouse-dep1\nservices:\n  api:\n    image: images.learnhouse.app/enterprise-backend:prod\n')
+
+    await expect(updateCommand({ backup: false, migrate: false })).resolves.toBeUndefined()
   })
 
   it('setup --ci rejects a short password before writing anything', async () => {
