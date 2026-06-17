@@ -140,6 +140,21 @@ describe('backup / restore — real tar, stubbed database', () => {
     expect(fs.readFileSync(path.join(installDir, '.env'), 'utf-8')).toContain('LEARNHOUSE_DOMAIN=localhost')
   })
 
+  it('restore restores the .env in interactive mode when confirmed', async () => {
+    await backupCommand()
+    const backupsDir = path.join(installDir, 'backups')
+    const archive = path.join(backupsDir, fs.readdirSync(backupsDir).find((f) => f.endsWith('.tar.gz'))!)
+    const orig = process.stdout.isTTY
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true })
+    try {
+      fs.writeFileSync(path.join(installDir, '.env'), 'LEARNHOUSE_DOMAIN=changed\n')
+      await restoreCommand(archive) // confirm=true (stub) → restore + .env restore
+      expect(fs.readFileSync(path.join(installDir, '.env'), 'utf-8')).toContain('LEARNHOUSE_DOMAIN=localhost')
+    } finally {
+      Object.defineProperty(process.stdout, 'isTTY', { value: orig, configurable: true })
+    }
+  })
+
   it('restore rejects an archive with no database.sql inside', async () => {
     // Build a tar.gz that contains a folder but no database.sql.
     const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-br-bad-'))

@@ -90,7 +90,7 @@ import { printBanner } from '../src/ui/banner.js'
 import { setupCommand } from '../src/commands/setup.js'
 import { checkPrerequisites } from '../src/prompts/prerequisites.js'
 import { setupEnterprise } from '../src/commands/setup-ee.js'
-import { dockerLogin } from '../src/services/docker.js'
+import { dockerLogin, dockerComposeLogs, dockerLogsMulti } from '../src/services/docker.js'
 
 // ─── Command guards — every entry point must bail cleanly with no install ──
 //
@@ -1190,5 +1190,36 @@ describe('dockerLogin', () => {
   it('throws with the registry name when login fails', () => {
     spawnSyncMock.mockReturnValue({ status: 1, stdout: Buffer.from(''), stderr: Buffer.from('unauthorized') })
     expect(() => dockerLogin('images.example.app', 'license', 'bad')).toThrow(/images\.example\.app/)
+  })
+})
+
+// ─── docker log streamers (spawn, with cleanup) ────────────────
+
+describe('docker log streamers', () => {
+  let spawnMock: ReturnType<typeof vi.fn>
+  let sigintBefore: number
+  beforeEach(async () => {
+    spawnMock = (await import('node:child_process')).spawn as unknown as ReturnType<typeof vi.fn>
+    spawnMock.mockClear()
+    sigintBefore = process.listenerCount('SIGINT')
+  })
+  afterEach(() => {
+    for (const h of process.listeners('SIGINT').slice(sigintBefore)) process.removeListener('SIGINT', h as never)
+    vi.restoreAllMocks()
+  })
+
+  it('dockerComposeLogs streams `docker compose logs -f` in the install dir', () => {
+    dockerComposeLogs('/srv/lh')
+    const [bin, args, opts] = spawnMock.mock.calls.at(-1) as [string, string[], { cwd: string }]
+    expect(bin).toBe('docker')
+    expect(args).toEqual(['compose', 'logs', '--tail', 'all', '-f'])
+    expect(opts.cwd).toBe('/srv/lh')
+  })
+
+  it('dockerLogsMulti tails each named container', () => {
+    dockerLogsMulti(['learnhouse-app-dep1', 'learnhouse-db-dep1'])
+    expect(spawnMock).toHaveBeenCalledTimes(2)
+    expect(spawnMock.mock.calls[0][1]).toContain('learnhouse-app-dep1')
+    expect(spawnMock.mock.calls[1][1]).toContain('learnhouse-db-dep1')
   })
 })
