@@ -1,15 +1,22 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { generateDockerCompose } from '../src/templates/docker-compose.js'
 import { generateEnvFile } from '../src/templates/env.js'
 import { generateNginxConf } from '../src/templates/nginx.js'
 import { generateCaddyfile } from '../src/templates/caddyfile.js'
 import { writeConfig, readConfig, findInstallDir, listInstallations } from '../src/services/config-store.js'
 import { patchComposeAddContentVolume } from '../src/services/content-volume-migration.js'
-import { validateEmail } from '../src/utils/validators.js'
+import { validateEmail, validatePassword, validateDomain, validatePort, validateSlug } from '../src/utils/validators.js'
+import { quoteEnvValue } from '../src/utils/env-quote.js'
+import { readEnvVar, setEnvVar, isExternalDbInstall, ensureAlembicBaseline, runAlembicUpgrade } from '../src/commands/update-ee.js'
+import { replaceComposeImageTag } from '../src/services/compose-utils.js'
 import type { SetupConfig } from '../src/types.js'
+import type { EditionLayout } from '../src/commands/update-ee.js'
+
+const COMMUNITY_LAYOUT: EditionLayout = { appService: 'learnhouse-app', alembicCwd: '/app/api', dbService: 'db' }
 
 const baseConfig: SetupConfig = {
   deploymentId: 'test1234',
@@ -444,7 +451,22 @@ vi.mock('../src/services/docker.js', async () => {
   const actual = await vi.importActual<typeof import('../src/services/docker.js')>(
     '../src/services/docker.js',
   )
-  return { ...actual, isContainerRunning: vi.fn(() => false) }
+  return {
+    ...actual,
+    isContainerRunning: vi.fn(() => false),
+    // Stub out docker exec so unit tests never touch a real daemon.
+    // Per-test overrides use vi.mocked(dockerComposeExec).mockReturnValue(...)
+    dockerComposeExec: vi.fn(() => ''),
+  }
+})
+
+// Capture execSync so the docker helpers below can be asserted on the exact
+// command they build, without shelling out to a real daemon. importActual
+// keeps spawn/spawnSync intact — the binary-surface tests spawn a real CLI
+// subprocess and must not be stubbed.
+vi.mock('node:child_process', async () => {
+  const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process')
+  return { ...actual, execSync: vi.fn(() => Buffer.from('')) }
 })
 
 describe('findInstallDir — picks the running install over a stale one', () => {
@@ -564,5 +586,1168 @@ describe('validateEmail — reserved TLDs', () => {
 
   it('is case-insensitive on the TLD', () => {
     expect(validateEmail('admin@SCHOOL.LOCAL')).toMatch(/RFC 6761|reserved/i)
+  })
+})
+
+// ─── Regression: update command must pull the new image ──────
+//
+// Prior to this fix, `dockerComposeUp` was called without `pull=true`,
+// so `docker compose up -d` reused the locally-cached image instead of
+// pulling the new tag. Users on `latest` saw no change after running
+// `npx learnhouse update` because the compose file tag didn't change and
+// Docker never re-fetched. The fix: (1) explicit `docker compose pull`
+// before restarting, (2) `--pull always` on `docker compose up` as safety net.
+//
+// These tests pin the image tag replacement regex that writes the new tag
+// into docker-compose.yml before the pull step.
+
+// ─── Regression: update command must pull the new image ──────
+//
+// Prior to this fix, `dockerComposeUp` was called without `pull=true`,
+// so `docker compose up -d` reused the locally-cached image instead of
+// pulling the new tag. Users on `latest` saw no change after running
+// `npx learnhouse update` because the compose file tag didn't change and
+// Docker never re-fetched. The fix: (1) explicit `docker compose pull`
+// before restarting, (2) `--pull always` on `docker compose up` as safety net.
+//
+// These tests import `replaceComposeImageTag` from the real service module,
+// so a regex change in compose-utils.ts is caught immediately.
+
+describe('update — image tag replacement in docker-compose.yml', () => {
+  it('replaces a pinned version tag (1.2.2 → 1.2.6)', () => {
+    const compose = 'image: ghcr.io/learnhouse/app:1.2.2'
+    expect(replaceComposeImageTag(compose, 'ghcr.io/learnhouse/app:1.2.6')).toBe(
+      'image: ghcr.io/learnhouse/app:1.2.6',
+    )
+  })
+
+  it('updates the tag within a realistic compose file block', () => {
+    const compose = [
+      'services:',
+      '  learnhouse-app:',
+      '    image: ghcr.io/learnhouse/app:1.2.2',
+      '    restart: unless-stopped',
+    ].join('\n')
+    const updated = replaceComposeImageTag(compose, 'ghcr.io/learnhouse/app:1.2.6')
+    expect(updated).toContain('image: ghcr.io/learnhouse/app:1.2.6')
+    expect(updated).not.toContain(':1.2.2')
+  })
+
+  it('handles v-prefixed version tags', () => {
+    const compose = 'image: ghcr.io/learnhouse/app:v1.2.2'
+    expect(replaceComposeImageTag(compose, 'ghcr.io/learnhouse/app:v1.2.6')).toBe(
+      'image: ghcr.io/learnhouse/app:v1.2.6',
+    )
+  })
+
+  it('handles latest tag (no-version update path)', () => {
+    const compose = 'image: ghcr.io/learnhouse/app:latest'
+    // When no --version is specified the tag stays "latest" but the explicit
+    // docker compose pull that now precedes `up` fetches the actual new digest.
+    expect(replaceComposeImageTag(compose, 'ghcr.io/learnhouse/app:latest')).toBe(
+      'image: ghcr.io/learnhouse/app:latest',
+    )
+  })
+
+  it('handles dev channel tag', () => {
+    const compose = 'image: ghcr.io/learnhouse/app:dev'
+    expect(replaceComposeImageTag(compose, 'ghcr.io/learnhouse/app:1.3.0')).toBe(
+      'image: ghcr.io/learnhouse/app:1.3.0',
+    )
+  })
+
+  it('does not modify other images in the compose file', () => {
+    const compose = [
+      '  learnhouse-app:',
+      '    image: ghcr.io/learnhouse/app:1.2.2',
+      '  db:',
+      '    image: pgvector/pgvector:pg16',
+      '  nginx:',
+      '    image: nginx:alpine',
+    ].join('\n')
+    const updated = replaceComposeImageTag(compose, 'ghcr.io/learnhouse/app:1.2.6')
+    expect(updated).toContain('image: ghcr.io/learnhouse/app:1.2.6')
+    expect(updated).toContain('image: pgvector/pgvector:pg16')
+    expect(updated).toContain('image: nginx:alpine')
+  })
+})
+
+// ─── Regression: `update` must actually pull the new image ──────────
+//
+// The update command rewrote docker-compose.yml with the new tag but
+// skipped the pull, so `docker compose up` reused the cached layer and
+// the container restarted on the OLD image (reported on Discord: app.py
+// still read the previous version after `learnhouse update`). The fix
+// calls dockerComposePull() explicitly and brings services up with
+// `--pull always`. These tests pin the exact commands so the pull can't
+// silently regress out again.
+
+describe('update — docker pull/up commands', () => {
+  let execSync: ReturnType<typeof vi.fn>
+  let dockerComposeUp: typeof import('../src/services/docker.js').dockerComposeUp
+  let dockerComposePull: typeof import('../src/services/docker.js').dockerComposePull
+
+  beforeEach(async () => {
+    const cp = await import('node:child_process')
+    execSync = cp.execSync as unknown as ReturnType<typeof vi.fn>
+    execSync.mockClear()
+    ;({ dockerComposeUp, dockerComposePull } = await import('../src/services/docker.js'))
+  })
+
+  const lastCmd = () => execSync.mock.calls.at(-1)?.[0] as string
+  const lastOpts = () => execSync.mock.calls.at(-1)?.[1] as { cwd?: string }
+
+  it('dockerComposePull runs `docker compose pull` in the install dir', () => {
+    dockerComposePull('/srv/lh')
+    expect(lastCmd()).toBe('docker compose pull')
+    expect(lastOpts().cwd).toBe('/srv/lh')
+  })
+
+  it('dockerComposeUp without pull just brings services up', () => {
+    dockerComposeUp('/srv/lh')
+    expect(lastCmd()).toBe('docker compose up -d')
+    expect(lastOpts().cwd).toBe('/srv/lh')
+  })
+
+  it('dockerComposeUp with pull=true adds --pull always (the update path)', () => {
+    dockerComposeUp('/srv/lh', true)
+    expect(lastCmd()).toBe('docker compose up -d --pull always')
+  })
+})
+
+// ─── quoteEnvValue — .env value escaping ────────────────────
+//
+// docker compose's dotenv parser has subtle rules: bare values can have
+// `#` truncate them, `$VAR` gets interpolated, and unquoted spaces are
+// trimmed. Our quoting scheme ensures values are passed through literally.
+
+describe('quoteEnvValue', () => {
+  it('returns plain value when no special characters', () => {
+    expect(quoteEnvValue('plainvalue')).toBe('plainvalue')
+    expect(quoteEnvValue('aBc123-_.')).toBe('aBc123-_.')
+  })
+
+  it('wraps in single quotes when value has a space', () => {
+    expect(quoteEnvValue('hello world')).toBe("'hello world'")
+  })
+
+  it('wraps in single quotes when value has a dollar sign', () => {
+    // Without quoting, docker compose would interpolate $VAR references.
+    expect(quoteEnvValue('pass$word')).toBe("'pass$word'")
+  })
+
+  it('wraps in single quotes when value has a hash', () => {
+    // Without quoting, # would truncate the rest as a comment.
+    expect(quoteEnvValue('color#1')).toBe("'color#1'")
+  })
+
+  it('wraps in single quotes when value has a backtick', () => {
+    expect(quoteEnvValue('cmd`injection`')).toBe("'cmd`injection`'")
+  })
+
+  it('wraps in single quotes when value has an exclamation mark', () => {
+    expect(quoteEnvValue('pass!word')).toBe("'pass!word'")
+  })
+
+  it('wraps in double quotes and preserves content when value has a single quote', () => {
+    // Single-quoted strings cannot contain a literal single quote, so we
+    // fall back to double quotes. The content is kept as-is unless it
+    // contains backslashes or double quotes.
+    expect(quoteEnvValue("it's")).toBe(`"it's"`)
+  })
+
+  it('escapes backslashes in the double-quote fallback path', () => {
+    // value has a single quote (forces double-quote path) AND a backslash.
+    const value = "back\\slash's"        // actual string: back\slash's
+    const result = quoteEnvValue(value)
+    // backslash must be doubled: back\\slash's → "back\\slash's"
+    expect(result).toBe('"back\\\\slash\'s"')
+    // The result must also not start with a single quote.
+    expect(result.startsWith("'")).toBe(false)
+  })
+
+  it('escapes double-quote characters in the double-quote fallback path', () => {
+    // value with both single and double quotes
+    const value = `say "it's great"`     // has ' and "
+    const result = quoteEnvValue(value)
+    expect(result).toBe(`"say \\"it's great\\""`)
+  })
+
+  it('returns empty string for empty input', () => {
+    expect(quoteEnvValue('')).toBe('')
+  })
+})
+
+// ─── validatePassword / validateDomain / validatePort / validateSlug ─
+//
+// The setup wizard validates user input before writing it into .env or
+// docker-compose.yml. Invalid values can cause silent failures at
+// container startup (e.g. a password with reserved chars breaks the
+// Postgres connection string, a bad port blocks `docker compose up`).
+
+describe('validatePassword', () => {
+  it('rejects an empty string', () => {
+    expect(validatePassword('')).toMatch(/required/i)
+  })
+
+  it('rejects passwords shorter than 8 characters', () => {
+    expect(validatePassword('abc')).toMatch(/8 characters/i)
+    expect(validatePassword('1234567')).toMatch(/8 characters/i)
+  })
+
+  it('accepts a password of exactly 8 characters', () => {
+    expect(validatePassword('12345678')).toBeUndefined()
+  })
+
+  it('accepts longer passwords', () => {
+    expect(validatePassword('supersecret123!')).toBeUndefined()
+  })
+})
+
+describe('validateDomain', () => {
+  it('accepts localhost', () => {
+    expect(validateDomain('localhost')).toBeUndefined()
+  })
+
+  it('accepts a simple subdomain', () => {
+    expect(validateDomain('learn.example.com')).toBeUndefined()
+  })
+
+  it('accepts a bare domain with two-letter TLD', () => {
+    expect(validateDomain('school.io')).toBeUndefined()
+  })
+
+  it('rejects an empty string', () => {
+    expect(validateDomain('')).toMatch(/required/i)
+  })
+
+  it('rejects a bare word with no dot', () => {
+    expect(validateDomain('notadomain')).toMatch(/valid domain/i)
+  })
+
+  it('rejects a value with spaces', () => {
+    expect(validateDomain('my domain.com')).toMatch(/valid domain/i)
+  })
+
+  it('rejects a label starting with a hyphen', () => {
+    expect(validateDomain('-bad.example.com')).toMatch(/valid domain/i)
+  })
+
+  it('rejects a label ending with a hyphen', () => {
+    expect(validateDomain('bad-.example.com')).toMatch(/valid domain/i)
+  })
+
+  it('rejects an IP address (not a domain name)', () => {
+    expect(validateDomain('192.168.1.1')).toMatch(/valid domain/i)
+  })
+})
+
+describe('validatePort', () => {
+  it('accepts port 1 (minimum)', () => {
+    expect(validatePort('1')).toBeUndefined()
+  })
+
+  it('accepts port 65535 (maximum)', () => {
+    expect(validatePort('65535')).toBeUndefined()
+  })
+
+  it('accepts a common port (8080)', () => {
+    expect(validatePort('8080')).toBeUndefined()
+  })
+
+  it('rejects port 0', () => {
+    expect(validatePort('0')).toMatch(/between 1 and 65535/i)
+  })
+
+  it('rejects port 65536', () => {
+    expect(validatePort('65536')).toMatch(/between 1 and 65535/i)
+  })
+
+  it('rejects a non-numeric string', () => {
+    expect(validatePort('abc')).toMatch(/between 1 and 65535/i)
+  })
+
+  it('rejects a negative number', () => {
+    expect(validatePort('-80')).toMatch(/between 1 and 65535/i)
+  })
+})
+
+describe('validateSlug', () => {
+  it('accepts a simple lowercase slug', () => {
+    expect(validateSlug('myorg')).toBeUndefined()
+  })
+
+  it('accepts a slug with hyphens', () => {
+    expect(validateSlug('my-org')).toBeUndefined()
+    expect(validateSlug('acme-learning-2024')).toBeUndefined()
+  })
+
+  it('accepts slugs with numbers', () => {
+    expect(validateSlug('org123')).toBeUndefined()
+  })
+
+  it('rejects an empty string', () => {
+    expect(validateSlug('')).toMatch(/required/i)
+  })
+
+  it('rejects uppercase letters', () => {
+    expect(validateSlug('MyOrg')).toMatch(/lowercase/i)
+  })
+
+  it('rejects a leading hyphen', () => {
+    expect(validateSlug('-myorg')).toMatch(/lowercase/i)
+  })
+
+  it('rejects a trailing hyphen', () => {
+    expect(validateSlug('myorg-')).toMatch(/lowercase/i)
+  })
+
+  it('rejects consecutive hyphens', () => {
+    expect(validateSlug('my--org')).toMatch(/lowercase/i)
+  })
+
+  it('rejects spaces', () => {
+    expect(validateSlug('my org')).toMatch(/lowercase/i)
+  })
+
+  it('rejects underscores', () => {
+    expect(validateSlug('my_org')).toMatch(/lowercase/i)
+  })
+})
+
+// ─── readEnvVar / setEnvVar — .env mutation helpers ─────────
+//
+// `setEnvVar` is called by the `update` command to stamp EE_IMAGE_TAG after
+// a pull, and by `env` to persist user edits. `readEnvVar` reads connection
+// strings, license keys, etc. Both must handle quoted values correctly.
+
+describe('readEnvVar', () => {
+  let tmpDir: string
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-readenvvar-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('returns the value for a key that exists', () => {
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'FOO=bar\nBAZ=qux\n')
+    expect(readEnvVar(tmpDir, 'FOO')).toBe('bar')
+  })
+
+  it('returns the correct value when key is not the first line', () => {
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'ALPHA=1\nBETA=hello\nGAMMA=3\n')
+    expect(readEnvVar(tmpDir, 'BETA')).toBe('hello')
+  })
+
+  it('returns undefined when the key is not present', () => {
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'FOO=bar\n')
+    expect(readEnvVar(tmpDir, 'MISSING')).toBeUndefined()
+  })
+
+  it('strips single-quote wrapping', () => {
+    fs.writeFileSync(path.join(tmpDir, '.env'), "SECRET='my secret value'\n")
+    expect(readEnvVar(tmpDir, 'SECRET')).toBe('my secret value')
+  })
+
+  it('strips double-quote wrapping', () => {
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'SECRET="my secret value"\n')
+    expect(readEnvVar(tmpDir, 'SECRET')).toBe('my secret value')
+  })
+
+  it('returns undefined when .env does not exist', () => {
+    expect(readEnvVar(tmpDir, 'FOO')).toBeUndefined()
+  })
+
+  it('does not match a key that is a prefix of another key', () => {
+    // BAR should not match BARBAZ
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'BARBAZ=wrong\nBAR=right\n')
+    expect(readEnvVar(tmpDir, 'BAR')).toBe('right')
+  })
+})
+
+describe('setEnvVar', () => {
+  let tmpDir: string
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-setenvvar-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('replaces an existing variable in-place', () => {
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'FOO=old\nBAR=keep\n')
+    setEnvVar(tmpDir, 'FOO', 'new')
+    const content = fs.readFileSync(path.join(tmpDir, '.env'), 'utf-8')
+    expect(content).toContain('FOO=new')
+    expect(content).not.toContain('FOO=old')
+    expect(content).toContain('BAR=keep')
+  })
+
+  it('appends a new variable when the key is absent', () => {
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'FOO=bar\n')
+    setEnvVar(tmpDir, 'NEW_KEY', 'value')
+    const content = fs.readFileSync(path.join(tmpDir, '.env'), 'utf-8')
+    expect(content).toContain('NEW_KEY=value')
+    expect(content).toContain('FOO=bar')
+  })
+
+  it('adds a newline separator before appending when file has no trailing newline', () => {
+    // Old files written without trailing newlines must still get a proper line break.
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'FOO=bar')
+    setEnvVar(tmpDir, 'NEW_KEY', 'value')
+    const content = fs.readFileSync(path.join(tmpDir, '.env'), 'utf-8')
+    // The two lines must be separated — not merged into "FOO=barNEW_KEY=value"
+    expect(content).toMatch(/FOO=bar\n/)
+    expect(content).toContain('NEW_KEY=value')
+  })
+
+  it('does not duplicate a key when called twice', () => {
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'FOO=first\n')
+    setEnvVar(tmpDir, 'FOO', 'second')
+    setEnvVar(tmpDir, 'FOO', 'third')
+    const content = fs.readFileSync(path.join(tmpDir, '.env'), 'utf-8')
+    const matches = content.match(/^FOO=/gm) ?? []
+    expect(matches.length).toBe(1)
+    expect(content).toContain('FOO=third')
+  })
+})
+
+describe('isExternalDbInstall', () => {
+  let tmpDir: string
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-extdb-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('returns true when LEARNHOUSE_SQL_CONNECTION_STRING is set', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.env'),
+      'LEARNHOUSE_SQL_CONNECTION_STRING=postgresql://user:pw@rds.example.com:5432/lh\n',
+    )
+    expect(isExternalDbInstall(tmpDir)).toBe(true)
+  })
+
+  it('returns false when the connection string key is absent', () => {
+    fs.writeFileSync(path.join(tmpDir, '.env'), 'SOME_OTHER_VAR=foo\n')
+    expect(isExternalDbInstall(tmpDir)).toBe(false)
+  })
+
+  it('returns false when .env does not exist', () => {
+    expect(isExternalDbInstall(tmpDir)).toBe(false)
+  })
+})
+
+// ─── ensureAlembicBaseline — migration baseline stamping ─────
+//
+// Installs created via the app's create_all startup path have no Alembic
+// revision in the database. Before running `upgrade head` we stamp the
+// current schema as the baseline so only new delta migrations are applied.
+// Without this, `upgrade head` replays every migration and errors on
+// existing tables ("relation already exists").
+
+describe('ensureAlembicBaseline', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-baseline-'))
+    fs.writeFileSync(path.join(tmpDir, 'docker-compose.yml'), 'name: test\nservices: {}\n')
+    const { dockerComposeExec } = await import('../src/services/docker.js')
+    vi.mocked(dockerComposeExec).mockReturnValue('')
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+    vi.clearAllMocks()
+  })
+
+  it('does not stamp when alembic current already shows a revision', async () => {
+    const { dockerComposeExec } = await import('../src/services/docker.js')
+    vi.mocked(dockerComposeExec).mockReturnValue('3f2a1b4c8d9e (head)\n')
+
+    const ui = { log: vi.fn(), ok: vi.fn(), warn: vi.fn() }
+    ensureAlembicBaseline(tmpDir, COMMUNITY_LAYOUT, ui)
+
+    // Only `current` called; `stamp heads` must NOT be called.
+    expect(vi.mocked(dockerComposeExec)).toHaveBeenCalledTimes(1)
+    const firstCall = vi.mocked(dockerComposeExec).mock.calls[0][2] as string
+    expect(firstCall).toContain('current')
+    expect(firstCall).not.toContain('stamp')
+  })
+
+  it('stamps heads when alembic current returns empty (create_all install)', async () => {
+    const { dockerComposeExec } = await import('../src/services/docker.js')
+    vi.mocked(dockerComposeExec).mockReturnValue('')
+
+    const ui = { log: vi.fn(), ok: vi.fn(), warn: vi.fn() }
+    ensureAlembicBaseline(tmpDir, COMMUNITY_LAYOUT, ui)
+
+    expect(vi.mocked(dockerComposeExec)).toHaveBeenCalledTimes(2)
+    const stampCall = vi.mocked(dockerComposeExec).mock.calls[1][2] as string
+    expect(stampCall).toContain('stamp heads')
+    expect(ui.ok).toHaveBeenCalled()
+  })
+
+  it('warns and does not throw when alembic current fails', async () => {
+    const { dockerComposeExec } = await import('../src/services/docker.js')
+    vi.mocked(dockerComposeExec).mockImplementation(() => {
+      throw new Error('container learnhouse-app not found')
+    })
+
+    const warns: string[] = []
+    const ui = { log: vi.fn(), ok: vi.fn(), warn: (m: string) => warns.push(m) }
+    // Must not propagate the exception — the update continues with a warning.
+    expect(() => ensureAlembicBaseline(tmpDir, COMMUNITY_LAYOUT, ui)).not.toThrow()
+    expect(warns.length).toBeGreaterThan(0)
+    expect(warns[0]).toMatch(/baseline|alembic/i)
+  })
+
+  it('recognises a revision line even when it is not at head', async () => {
+    // A non-head revision means the DB is stamped but migrations are pending.
+    // We must NOT re-stamp (which would discard the pending delta).
+    const { dockerComposeExec } = await import('../src/services/docker.js')
+    vi.mocked(dockerComposeExec).mockReturnValue('3f2a1b4c8d9e\n')  // no "(head)"
+
+    const ui = { log: vi.fn(), ok: vi.fn(), warn: vi.fn() }
+    ensureAlembicBaseline(tmpDir, COMMUNITY_LAYOUT, ui)
+
+    expect(vi.mocked(dockerComposeExec)).toHaveBeenCalledTimes(1)
+    const call = vi.mocked(dockerComposeExec).mock.calls[0][2] as string
+    expect(call).not.toContain('stamp')
+  })
+})
+
+// ─── runAlembicUpgrade — migration execution ─────────────────
+//
+// The upgrade step is the riskiest part of an update. Key invariants:
+//  - If the DB is already at head, `upgrade heads` must not be called
+//    (some Alembic versions error on a no-op upgrade).
+//  - If `upgrade heads` throws, the function returns false so the CLI can
+//    emit the rollback instructions without crashing the process.
+//  - Multiple heads (e.g. squashed migrations) are handled correctly.
+
+describe('runAlembicUpgrade', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-upgrade-'))
+    fs.writeFileSync(path.join(tmpDir, 'docker-compose.yml'), 'name: test\nservices: {}\n')
+    const { dockerComposeExec } = await import('../src/services/docker.js')
+    vi.mocked(dockerComposeExec).mockReturnValue('')
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+    vi.clearAllMocks()
+  })
+
+  it('returns true and skips upgrade when already at head', async () => {
+    const { dockerComposeExec } = await import('../src/services/docker.js')
+    vi.mocked(dockerComposeExec).mockReturnValue('3f2a1b4c8d9e (head)\n')
+
+    const ui = { log: vi.fn(), ok: vi.fn(), warn: vi.fn() }
+    const result = runAlembicUpgrade(tmpDir, COMMUNITY_LAYOUT, ui)
+
+    expect(result).toBe(true)
+    // Only `current` called; `upgrade heads` must NOT be called for a no-op.
+    expect(vi.mocked(dockerComposeExec)).toHaveBeenCalledTimes(1)
+    expect(ui.ok).toHaveBeenCalled()
+  })
+
+  it('runs upgrade heads when current revision is not at head', async () => {
+    const { dockerComposeExec } = await import('../src/services/docker.js')
+    const mockExec = vi.mocked(dockerComposeExec)
+    mockExec
+      .mockReturnValueOnce('3f2a1b4c8d9e\n')                                  // current → not head
+      .mockReturnValueOnce('Running upgrade 3f2a1b4c → a9c3d7e1\nDone.\n')  // upgrade heads → ok
+
+    const ui = { log: vi.fn(), ok: vi.fn(), warn: vi.fn() }
+    const result = runAlembicUpgrade(tmpDir, COMMUNITY_LAYOUT, ui)
+
+    expect(result).toBe(true)
+    expect(mockExec).toHaveBeenCalledTimes(2)
+    const upgradeCall = mockExec.mock.calls[1][2] as string
+    expect(upgradeCall).toContain('upgrade heads')
+  })
+
+  it('returns false and warns when upgrade heads throws', async () => {
+    const { dockerComposeExec } = await import('../src/services/docker.js')
+    const mockExec = vi.mocked(dockerComposeExec)
+    mockExec
+      .mockReturnValueOnce('3f2a1b4c8d9e\n')   // current → not head
+      .mockImplementationOnce(() => {
+        throw Object.assign(new Error('migration failed'), { stderr: 'ERROR: relation "users" already exists' })
+      })
+
+    const warns: string[] = []
+    const ui = { log: vi.fn(), ok: vi.fn(), warn: (m: string) => warns.push(m) }
+    const result = runAlembicUpgrade(tmpDir, COMMUNITY_LAYOUT, ui)
+
+    expect(result).toBe(false)
+    expect(warns.some(w => /failed|backup/i.test(w))).toBe(true)
+  })
+
+  it('skips upgrade when all multiple current revisions are at head', async () => {
+    // Multi-head alembic trees: both heads present → nothing to apply.
+    const { dockerComposeExec } = await import('../src/services/docker.js')
+    vi.mocked(dockerComposeExec).mockReturnValue('aabbccdd (head)\nee112233 (head)\n')
+
+    const ui = { log: vi.fn(), ok: vi.fn(), warn: vi.fn() }
+    const result = runAlembicUpgrade(tmpDir, COMMUNITY_LAYOUT, ui)
+
+    expect(result).toBe(true)
+    expect(vi.mocked(dockerComposeExec)).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs upgrade when only some of the multiple heads are present', async () => {
+    // One branch is at head, one is not — upgrade must run.
+    const { dockerComposeExec } = await import('../src/services/docker.js')
+    const mockExec = vi.mocked(dockerComposeExec)
+    mockExec
+      .mockReturnValueOnce('aabbccdd (head)\nee112233\n')   // ee branch not at head
+      .mockReturnValueOnce('Running upgrade ee112233 → ff445566\n')
+
+    const ui = { log: vi.fn(), ok: vi.fn(), warn: vi.fn() }
+    const result = runAlembicUpgrade(tmpDir, COMMUNITY_LAYOUT, ui)
+
+    expect(result).toBe(true)
+    expect(mockExec).toHaveBeenCalledTimes(2)
+  })
+
+  it('returns true and marks no-op when current output has no revision lines', async () => {
+    // Empty output from a freshly-stamped DB (just ran ensureAlembicBaseline).
+    const { dockerComposeExec } = await import('../src/services/docker.js')
+    vi.mocked(dockerComposeExec).mockReturnValue('')
+
+    const ui = { log: vi.fn(), ok: vi.fn(), warn: vi.fn() }
+    const result = runAlembicUpgrade(tmpDir, COMMUNITY_LAYOUT, ui)
+
+    // No revision lines → revLines.length === 0 → upgrade heads runs
+    expect(result).toBe(true)
+  })
+})
+
+// ─── CLI binary smoke tests ──────────────────────────────────
+//
+// These tests spawn the actual built CLI binary and verify the user-facing
+// experience: help text, version string, and error messages for invalid
+// input. No Docker daemon is needed — they cover the "what does the user
+// see when they type X" layer that module-level unit tests cannot reach.
+
+const CLI_BIN = path.resolve(__dirname, '..', 'dist', 'bin', 'learnhouse.js')
+
+function runCli(args: string, timeoutMs = 10_000): { stdout: string; stderr: string; exitCode: number } {
+  const argArray = args ? args.trim().split(/\s+/) : []
+  const result = spawnSync('node', [CLI_BIN, ...argArray], {
+    encoding: 'utf-8',
+    timeout: timeoutMs,
+    env: { ...process.env, NO_COLOR: '1' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  return {
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+    exitCode: result.status ?? 1,
+  }
+}
+
+describe('CLI — version and help', () => {
+  it('--version prints a semver string and exits 0', () => {
+    const r = runCli('--version')
+    expect(r.exitCode).toBe(0)
+    expect(r.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/)
+  })
+
+  it('--help lists all core commands users need', () => {
+    const r = runCli('--help')
+    expect(r.exitCode).toBe(0)
+    const out = r.stdout
+    expect(out).toContain('setup')
+    expect(out).toContain('start')
+    expect(out).toContain('stop')
+    expect(out).toContain('update')
+    expect(out).toContain('backup')
+    expect(out).toContain('restore')
+    expect(out).toContain('status')
+    expect(out).toContain('health')
+    expect(out).toContain('config')
+  })
+
+  it('no-argument invocation shows the welcome screen, not an error', () => {
+    const r = runCli('')
+    expect(r.exitCode).toBe(0)
+    expect(r.stdout).toContain('LearnHouse')
+  })
+})
+
+describe('CLI — setup --help (flag discoverability)', () => {
+  it('shows all flags a user needs to automate a deployment', () => {
+    const r = runCli('setup --help')
+    expect(r.exitCode).toBe(0)
+    const out = r.stdout
+    expect(out).toContain('--ci')
+    expect(out).toContain('--domain')
+    expect(out).toContain('--port')
+    expect(out).toContain('--admin-email')
+    expect(out).toContain('--admin-password')
+    expect(out).toContain('--org-name')
+    expect(out).toContain('--org-slug')
+    expect(out).toContain('--no-start')
+  })
+})
+
+describe('CLI — update --help (flag discoverability)', () => {
+  it('shows the flags users need to target a specific version', () => {
+    const r = runCli('update --help')
+    expect(r.exitCode).toBe(0)
+    const out = r.stdout
+    expect(out).toContain('--to')
+    expect(out).toContain('--migrate')
+    expect(out).toContain('--no-migrate')
+    expect(out).toContain('--no-backup')
+  })
+})
+
+describe('CLI — backup / restore --help', () => {
+  it('backup --help mentions the archive concept', () => {
+    const r = runCli('backup --help')
+    expect(r.exitCode).toBe(0)
+    expect(r.stdout.toLowerCase()).toContain('archive')
+  })
+
+  it('restore --help mentions the archive argument', () => {
+    const r = runCli('restore --help')
+    expect(r.exitCode).toBe(0)
+    expect(r.stdout.toLowerCase()).toContain('archive')
+  })
+})
+
+// ─── CLI — command registration guard ────────────────────────
+//
+// A single sweep confirms all 16 commands are wired up. This test
+// exists because scale was fully implemented in scale.ts but forgotten
+// in bin/learnhouse.ts — `npx learnhouse scale` silently showed the
+// main help instead of the scale UI. Never again.
+
+describe('CLI — all 16 commands registered', () => {
+  const ALL_COMMANDS = [
+    'setup', 'start', 'stop', 'update', 'status', 'health',
+    'logs', 'config', 'env', 'backup', 'restore',
+    'deployments', 'doctor', 'shell', 'scale', 'dev',
+  ]
+
+  it('every command exits 0 on --help (none silently fall through to main help)', () => {
+    for (const cmd of ALL_COMMANDS) {
+      const r = runCli(`${cmd} --help`)
+      expect(r.exitCode, `"${cmd} --help" exited ${r.exitCode}:\n${r.stderr}`).toBe(0)
+    }
+  })
+
+  it('all commands appear in the root --help listing', () => {
+    const r = runCli('--help')
+    for (const cmd of ALL_COMMANDS) {
+      expect(r.stdout, `"${cmd}" is missing from root --help`).toContain(cmd)
+    }
+  })
+
+  it('unknown command exits non-zero', () => {
+    const r = runCli('nonexistent-command-xyz')
+    expect(r.exitCode).not.toBe(0)
+  })
+
+  it('setup --help lists all CI-mode flags a user needs to automate a deployment', () => {
+    const r = runCli('setup --help')
+    expect(r.exitCode).toBe(0)
+    // Every flag must be documented — missing flags mean users can't discover them
+    for (const flag of ['--ci', '--domain', '--port', '--admin-email', '--admin-password', '--org-name', '--org-slug', '--no-start']) {
+      expect(r.stdout, `"${flag}" missing from setup --help`).toContain(flag)
+    }
+  })
+
+  it('update --help lists all flags users need to safely update a deployment', () => {
+    const r = runCli('update --help')
+    expect(r.exitCode).toBe(0)
+    for (const flag of ['--to', '--migrate', '--no-migrate', '--no-backup']) {
+      expect(r.stdout, `"${flag}" missing from update --help`).toContain(flag)
+    }
+  })
+
+  it('dev --help lists --ee and --admin-email flags', () => {
+    const r = runCli('dev --help')
+    expect(r.exitCode).toBe(0)
+    expect(r.stdout).toContain('--ee')
+    expect(r.stdout).toContain('--admin-email')
+  })
+})
+
+
+// ─── CLI — setup --ci --no-start: real install, no Docker ────
+//
+// setup --ci --no-start writes the full file set (docker-compose.yml,
+// .env, nginx.conf, learnhouse.config.json) without starting containers.
+// Running the REAL binary against a temp HOME lets us verify that:
+//
+//   1. Specific values we passed end up in the right files with the right keys
+//   2. The config command correctly reads and displays those values
+//   3. Commands that require running containers (backup, update, status)
+//      exit non-zero with clear, actionable error messages — not silent
+//      crashes or cryptic stack traces
+//   4. Doctor runs its diagnostic checks and exits 0 (never fails, just reports)
+//
+// This is the deepest test you can run without a full Docker environment.
+
+describe('CLI — setup --ci --no-start: real installation, real file assertions', () => {
+  let tempHome: string
+  let installDir: string
+
+  const DOMAIN       = 'academy.example.com'
+  const PORT         = 7654
+  const EMAIL        = 'admin@academy.com'
+  const PASSWORD     = 'Academy-Pass-99'
+  const ORG_SLUG     = 'academy'
+  const ORG_NAME     = 'Academy Corp'
+  const INSTALL_NAME = 'acadsetup'
+
+  function cliHome(args: string[]) {
+    return spawnSync('node', [CLI_BIN, ...args], {
+      encoding: 'utf-8',
+      timeout: 30_000,
+      env: { ...process.env, HOME: tempHome, NO_COLOR: '1' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+  }
+
+  beforeAll(() => {
+    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-unit-home-'))
+    const r = cliHome([
+      'setup', '--ci',
+      '--name',           INSTALL_NAME,
+      '--domain',         DOMAIN,
+      '--port',           String(PORT),
+      '--admin-email',    EMAIL,
+      '--admin-password', PASSWORD,
+      '--org-name',       ORG_NAME,
+      '--org-slug',       ORG_SLUG,
+      '--no-start',
+    ])
+    if (r.status !== 0) throw new Error(`setup failed:\n${r.stdout}\n${r.stderr}`)
+    installDir = path.join(tempHome, '.learnhouse', INSTALL_NAME)
+  })
+
+  afterAll(() => {
+    try { fs.rmSync(tempHome, { recursive: true, force: true }) } catch { /* ignore */ }
+  })
+
+  // ── File existence ──────────────────────────────────────────
+  it('creates docker-compose.yml, .env, and learnhouse.config.json', () => {
+    expect(fs.existsSync(path.join(installDir, 'docker-compose.yml'))).toBe(true)
+    expect(fs.existsSync(path.join(installDir, '.env'))).toBe(true)
+    expect(fs.existsSync(path.join(installDir, 'learnhouse.config.json'))).toBe(true)
+  })
+
+  // ── docker-compose.yml ──────────────────────────────────────
+  it('docker-compose.yml has all four services (app, db, redis, nginx)', () => {
+    const yml = fs.readFileSync(path.join(installDir, 'docker-compose.yml'), 'utf-8')
+    expect(yml).toContain('learnhouse-app-')
+    expect(yml).toContain('learnhouse-db-')
+    expect(yml).toContain('learnhouse-redis-')
+    expect(yml).toContain('nginx')
+  })
+
+  it('docker-compose.yml exposes the exact port we specified', () => {
+    const yml = fs.readFileSync(path.join(installDir, 'docker-compose.yml'), 'utf-8')
+    expect(yml).toContain(String(PORT))
+  })
+
+  it('docker-compose.yml has restart: unless-stopped (survives reboots, respects manual stop)', () => {
+    const yml = fs.readFileSync(path.join(installDir, 'docker-compose.yml'), 'utf-8')
+    expect(yml).toContain('restart: unless-stopped')
+  })
+
+  it('docker-compose.yml app depends_on db with condition: service_healthy (no restart-loop on boot)', () => {
+    const yml = fs.readFileSync(path.join(installDir, 'docker-compose.yml'), 'utf-8')
+    expect(yml).toContain('condition: service_healthy')
+  })
+
+  // ── .env values ─────────────────────────────────────────────
+  it('.env LEARNHOUSE_DOMAIN contains the domain we passed', () => {
+    const env = fs.readFileSync(path.join(installDir, '.env'), 'utf-8')
+    expect(env).toContain(`LEARNHOUSE_DOMAIN=${DOMAIN}`)
+  })
+
+  it('.env LEARNHOUSE_INITIAL_ADMIN_EMAIL is exactly the email we passed', () => {
+    const env = fs.readFileSync(path.join(installDir, '.env'), 'utf-8')
+    expect(env).toContain(`LEARNHOUSE_INITIAL_ADMIN_EMAIL=${EMAIL}`)
+  })
+
+  it('.env LEARNHOUSE_INITIAL_ORG_SLUG is exactly the slug we passed', () => {
+    const env = fs.readFileSync(path.join(installDir, '.env'), 'utf-8')
+    expect(env).toContain(`LEARNHOUSE_INITIAL_ORG_SLUG=${ORG_SLUG}`)
+  })
+
+  it('.env has no =undefined lines (any undefined value causes a broken container at runtime)', () => {
+    const env = fs.readFileSync(path.join(installDir, '.env'), 'utf-8')
+    expect(env).not.toMatch(/=undefined(\s|$)/m)
+  })
+
+  it('.env POSTGRES_PASSWORD is set to a non-empty value (missing password → DB rejects all connections)', () => {
+    const env = fs.readFileSync(path.join(installDir, '.env'), 'utf-8')
+    expect(env).not.toContain('POSTGRES_PASSWORD=undefined')
+    expect(env).toMatch(/^POSTGRES_PASSWORD=.{8,}$/m)
+  })
+
+  it('.env JWT secrets are at least 40 characters (short secrets are cryptographically weak)', () => {
+    const env = fs.readFileSync(path.join(installDir, '.env'), 'utf-8')
+    const kv = Object.fromEntries(
+      env.split('\n')
+        .filter(l => l.includes('=') && !l.startsWith('#'))
+        .map(l => [l.split('=')[0], l.slice(l.indexOf('=') + 1)]),
+    )
+    expect(kv['NEXTAUTH_SECRET']?.trim().length).toBeGreaterThanOrEqual(40)
+    expect(kv['LEARNHOUSE_AUTH_JWT_SECRET_KEY']?.trim().length).toBeGreaterThanOrEqual(40)
+  })
+
+  // ── learnhouse.config.json ──────────────────────────────────
+  it('learnhouse.config.json stores exactly the domain, port, and slug we passed', () => {
+    const cfg = JSON.parse(fs.readFileSync(path.join(installDir, 'learnhouse.config.json'), 'utf-8'))
+    expect(cfg.domain).toBe(DOMAIN)
+    expect(cfg.httpPort).toBe(PORT)
+    expect(cfg.orgSlug).toBe(ORG_SLUG)
+  })
+
+  it('learnhouse.config.json deploymentId is a non-empty alphanumeric id', () => {
+    const cfg = JSON.parse(fs.readFileSync(path.join(installDir, 'learnhouse.config.json'), 'utf-8'))
+    expect(cfg.deploymentId).toMatch(/^[a-z0-9]{8,}$/)
+  })
+
+  // ── config command — reads and displays our install ─────────
+  it('"config" exits 0 and shows our domain in the URL line', () => {
+    const r = cliHome(['config'])
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain(DOMAIN)
+  })
+
+  it('"config" shows our org slug', () => {
+    const r = cliHome(['config'])
+    expect(r.stdout).toContain(ORG_SLUG)
+  })
+
+  it('"config" shows the install directory path', () => {
+    const r = cliHome(['config'])
+    expect(r.stdout).toContain(installDir)
+  })
+
+  it('"config" shows a link to the .env file (so users know where to find secrets)', () => {
+    const r = cliHome(['config'])
+    expect(r.stdout).toContain('.env')
+  })
+
+  // ── status — prints URL from config before touching Docker ────
+  it('"status" shows our install URL (read from config.json before any Docker call)', () => {
+    // status always prints the URL first — this is guaranteed regardless of whether
+    // containers are running, because it reads learnhouse.config.json before docker compose ps
+    const r = cliHome(['status'])
+    expect(r.stdout + r.stderr).toContain(DOMAIN)
+  })
+
+  it('"status" shows the port in the URL', () => {
+    const r = cliHome(['status'])
+    expect(r.stdout + r.stderr).toContain(String(PORT))
+  })
+
+  // ── backup — specific error message when DB container is down ─
+  it('"backup" exits 1 and says the database container is not running', () => {
+    const r = cliHome(['backup'])
+    expect(r.status).toBe(1)
+    // Exact message from backup command — "not running" tells the user what to do
+    expect(r.stdout + r.stderr).toContain('not running')
+  })
+
+  // ── update — version check against GHCR before touching containers ─
+  it('"update --to 0.0.0-nonexistent" exits 1 with version-not-found message', () => {
+    const r = cliHome(['update', '--to', '0.0.0-nonexistent', '--no-backup', '--no-migrate'])
+    expect(r.status).toBe(1)
+    // Exact message from update command
+    expect(r.stdout + r.stderr).toContain('not found')
+  })
+
+  // ── doctor — diagnostic, exits 0, confirms Docker present ────
+  it('"doctor" exits 0 (it reports problems but never fails hard)', () => {
+    const r = cliHome(['doctor'])
+    expect(r.status).toBe(0)
+  })
+
+  it('"doctor" confirms Docker is installed on the test machine', () => {
+    const r = cliHome(['doctor'])
+    expect(r.stdout + r.stderr).toContain('Docker installed')
+  })
+
+  it('"doctor" reports that no containers are running (expected — we used --no-start)', () => {
+    const r = cliHome(['doctor'])
+    expect(r.stdout + r.stderr).toContain('No containers found')
+  })
+})
+
+// ─── CLI — setup --ci input validation (no Docker needed) ────
+//
+// Bad input must: (1) exit 1, (2) print a clear message, (3) leave no
+// files behind. Each test uses an isolated temp HOME so a validation
+// failure can never pollute ~/.learnhouse on the developer's machine.
+// Testing at the binary level catches regressions that module-level tests
+// miss — e.g. a Commander flag definition that silently swallows the value
+// before validation runs.
+
+describe('CLI — setup --ci input validation', () => {
+  let validationHome: string
+
+  beforeAll(() => { validationHome = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-val-')) })
+  afterAll(() => { try { fs.rmSync(validationHome, { recursive: true, force: true }) } catch { /* ignore */ } })
+
+  function setupBad(name: string, extraArgs: string[]) {
+    return spawnSync('node', [CLI_BIN, 'setup', '--ci', '--name', name, ...extraArgs], {
+      encoding: 'utf-8', timeout: 20_000,
+      env: { ...process.env, HOME: validationHome, NO_COLOR: '1' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+  }
+
+  function installDir(name: string) {
+    return path.join(validationHome, '.learnhouse', name)
+  }
+
+  it('exits 1 with "--admin-password" in the error when password is missing', () => {
+    const r = setupBad('val-no-pw', ['--domain', 'localhost', '--port', '9179'])
+    expect(r.status).toBe(1)
+    expect(r.stdout + r.stderr).toContain('--admin-password')
+    expect(fs.existsSync(installDir('val-no-pw'))).toBe(false)
+  })
+
+  it('exits 1 with "8 characters" message when password is too short (< 8 chars)', () => {
+    const r = setupBad('val-shortpw', ['--domain', 'localhost', '--port', '9179', '--admin-password', 'abc'])
+    expect(r.status).toBe(1)
+    expect(r.stdout + r.stderr).toMatch(/8 characters|too short/i)
+    expect(fs.existsSync(installDir('val-shortpw'))).toBe(false)
+  })
+
+  it('exits 1 with port error when --port 0 is given (below valid range 1-65535)', () => {
+    const r = setupBad('val-badport', ['--domain', 'localhost', '--port', '0', '--admin-password', 'testpassword1'])
+    expect(r.status).toBe(1)
+    expect(r.stdout + r.stderr).toMatch(/port|between/i)
+    expect(fs.existsSync(installDir('val-badport'))).toBe(false)
+  })
+
+  it('exits 1 with port error when --port 65536 is given (above valid range 1-65535)', () => {
+    const r = setupBad('val-highport', ['--domain', 'localhost', '--port', '65536', '--admin-password', 'testpassword1'])
+    expect(r.status).toBe(1)
+    expect(r.stdout + r.stderr).toMatch(/port|between/i)
+    expect(fs.existsSync(installDir('val-highport'))).toBe(false)
+  })
+
+  it('exits 1 with domain error when an IP address is used as --domain (IPs not valid domains)', () => {
+    const r = setupBad('val-baddom', ['--domain', '192.168.1.1', '--port', '9179', '--admin-password', 'testpassword1'])
+    expect(r.status).toBe(1)
+    expect(r.stdout + r.stderr).toMatch(/domain|valid/i)
+    expect(fs.existsSync(installDir('val-baddom'))).toBe(false)
+  })
+
+  it('exits 1 with reserved-TLD message when --admin-email uses .local (seeder rejects it → no admin created)', () => {
+    const r = setupBad('val-badmail-local', [
+      '--domain', 'localhost', '--port', '9179',
+      '--admin-password', 'testpassword1',
+      '--admin-email', 'admin@school.local',
+    ])
+    expect(r.status).toBe(1)
+    expect(r.stdout + r.stderr).toMatch(/reserved/i)
+  })
+
+  it('exits 1 with reserved-TLD message when --admin-email uses .test', () => {
+    const r = setupBad('val-badmail-test', [
+      '--domain', 'localhost', '--port', '9179',
+      '--admin-password', 'testpassword1',
+      '--admin-email', 'admin@school.test',
+    ])
+    expect(r.status).toBe(1)
+    expect(r.stdout + r.stderr).toMatch(/reserved/i)
+  })
+})
+
+// ─── Template completeness — all services present ────────────
+//
+// The generated docker-compose.yml must include all four services that a
+// standard community install needs. Missing a service (e.g. redis dropped
+// by a template bug) causes the app to crash at startup, which users
+// report as "it just won't start" — hard to diagnose from logs alone.
+
+describe('generateDockerCompose — service completeness', () => {
+  it('default install includes all four core services', () => {
+    const yml = generateDockerCompose(baseConfig)
+    // Each service has a container_name with the deployment id — this
+    // confirms both the service declaration AND the naming convention.
+    expect(yml).toContain(`learnhouse-app-${baseConfig.deploymentId}`)
+    expect(yml).toContain(`learnhouse-db-${baseConfig.deploymentId}`)
+    expect(yml).toContain(`learnhouse-redis-${baseConfig.deploymentId}`)
+    // nginx (reverse proxy)
+    expect(yml).toContain('nginx')
+  })
+
+  it('restart policy is unless-stopped on the app service', () => {
+    // "unless-stopped" survives host reboots while still being manually
+    // stoppable. "always" would restart even after `npx learnhouse stop`.
+    const yml = generateDockerCompose(baseConfig)
+    expect(yml).toContain('restart: unless-stopped')
+  })
+
+  it('app service depends_on db with condition: service_healthy', () => {
+    // Without this, the app starts before Postgres is ready and immediately
+    // errors, causing a restart loop the user sees as "app keeps restarting".
+    const yml = generateDockerCompose(baseConfig)
+    expect(yml).toContain('condition: service_healthy')
+  })
+})
+
+// ─── Env file completeness — no silent empty/undefined values ─
+//
+// A value rendered as "=undefined" or left blank causes the container to
+// start with a wrong environment — Postgres rejects the connection, JWT
+// verification fails, etc. These tests are the first line of defence
+// against template regressions that produce broken installs.
+
+describe('generateEnvFile — no empty or undefined values', () => {
+  // Must include dbPassword: without it the template emits POSTGRES_PASSWORD=undefined,
+  // which causes the DB container to reject connections at runtime.
+  const envConfig = { ...baseConfig, dbPassword: 'db-pass-test-123' }
+
+  it('no line has the literal value "undefined"', () => {
+    const env = generateEnvFile(envConfig)
+    expect(env).not.toMatch(/=undefined(\s|$)/m)
+  })
+
+  it('all KEY=VALUE lines have a non-empty value', () => {
+    const env = generateEnvFile(envConfig)
+    const valueLines = env.split('\n').filter((l) => l.includes('=') && !l.startsWith('#'))
+    for (const line of valueLines) {
+      const value = line.slice(line.indexOf('=') + 1)
+      expect(value.trim()).not.toBe('')
+    }
+  })
+
+  it('required secrets are populated (JWT and auth keys)', () => {
+    const env = generateEnvFile(envConfig)
+    // These must never be empty — an empty secret lets anyone forge tokens.
+    const lines = Object.fromEntries(
+      env.split('\n')
+        .filter((l) => l.includes('=') && !l.startsWith('#'))
+        .map((l) => [l.split('=')[0], l.slice(l.indexOf('=') + 1)]),
+    )
+    expect(lines['NEXTAUTH_SECRET']?.trim().length).toBeGreaterThan(8)
+    expect(lines['LEARNHOUSE_AUTH_JWT_SECRET_KEY']?.trim().length).toBeGreaterThan(8)
   })
 })
