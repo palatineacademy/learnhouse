@@ -157,7 +157,7 @@ function OpenSignUpComponent() {
       )}
 
       {/* Signup Form Card */}
-      <div className="bg-white rounded-xl p-6 nice-shadow">
+      {!message && <div className="bg-white rounded-xl p-6 nice-shadow">
         <FormLayout onSubmit={formik.handleSubmit}>
           <FormField name="email">
             <FormLabelAndMessage
@@ -282,15 +282,15 @@ function OpenSignUpComponent() {
           <img src="https://fonts.gstatic.com/s/i/productlogos/googleg/v6/24px.svg" alt="" className="w-4 h-4" />
           <span>{t('auth.sign_in_with_google')}</span>
         </button>
-      </div>
+      </div>}
 
       {/* Login Link */}
-      <p className="text-center text-gray-600 mt-6">
+      {!message && <p className="text-center text-gray-600 mt-6">
         {t('auth.already_have_account')}{' '}
         <Link href="/login" className="font-semibold text-gray-900 hover:underline">
           {t('auth.login')}
         </Link>
-      </p>
+      </p>}
     </div>
   )
 }
