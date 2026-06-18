@@ -99,18 +99,18 @@ export default function AuthBrandingPanel({ org, welcomeText }: AuthBrandingPane
           )}>
             {/* Organization logo */}
             <Link prefetch href={getUriWithOrg(org?.slug, '/')}>
-              <div className="w-24 h-24 rounded-2xl ring-1 ring-inset ring-white/10 bg-white flex items-center justify-center overflow-hidden">
+              <div className="w-[300px] h-[300px] flex items-center justify-center">
                 {org?.logo_image ? (
                   <img
                     src={getOrgLogoMediaDirectory(org.org_uuid, org.logo_image)}
                     alt={org.name}
-                    className="w-full h-full object-contain p-3"
+                    className="w-full h-full object-contain"
                   />
                 ) : (
                   <Image
                     quality={100}
-                    width={96}
-                    height={96}
+                    width={300}
+                    height={300}
                     src={learnhouseIcon}
                     alt="LearnHouse"
                     className="object-contain"
