@@ -39,8 +39,10 @@ async def client(app):
         yield c
 
 
-def _fake_user(email="user@test.com", user_id=42, password_changed_at=None):
-    return SimpleNamespace(id=user_id, email=email, password_changed_at=password_changed_at)
+def _fake_user(email="user@test.com", user_id=42, password_changed_at=None, access_level=0):
+    return SimpleNamespace(
+        id=user_id, email=email, password_changed_at=password_changed_at, access_level=access_level
+    )
 
 
 def _patch_happy_path(payload):
