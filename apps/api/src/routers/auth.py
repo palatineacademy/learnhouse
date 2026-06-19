@@ -259,7 +259,7 @@ async def refresh(
         raise credentials_exception
 
     new_access_token = create_access_token(
-        data={"sub": email},
+        data={"sub": email, "access_level": user.access_level},
         expires_delta=JWT_ACCESS_TOKEN_EXPIRES,
     )
     new_refresh_token = create_refresh_token(data={"sub": email})
@@ -397,7 +397,7 @@ async def login(
 
     # Step 6: Issue tokens
     access_token = create_access_token(
-        data={"sub": username},
+        data={"sub": username, "access_level": user.access_level},
         expires_delta=JWT_ACCESS_TOKEN_EXPIRES
     )
     refresh_token = create_refresh_token(data={"sub": username})
@@ -507,7 +507,7 @@ async def third_party_login(
         )
 
     access_token = create_access_token(
-        data={"sub": user.email},
+        data={"sub": user.email, "access_level": user.access_level},
         expires_delta=JWT_ACCESS_TOKEN_EXPIRES
     )
     refresh_token = create_refresh_token(data={"sub": user.email})

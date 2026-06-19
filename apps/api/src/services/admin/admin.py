@@ -43,6 +43,7 @@ from src.services.analytics.analytics import track
 from src.services.analytics import events as analytics_events
 from src.services.webhooks.dispatch import dispatch_webhooks
 from src.security.auth import create_access_token, create_refresh_token
+from src.core.deployment_mode import get_deployment_mode
 from src.security.features_utils.plan_check import get_org_plan
 from src.security.features_utils.plans import plan_meets_requirement
 from src.security.features_utils.usage import (
@@ -77,13 +78,16 @@ async def _resolve_org_slug(org_slug: str, token_user: APITokenUser, db_session:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="API token does not have access to this organization",
         )
-    # Enforce pro plan requirement for admin API
-    current_plan = await get_org_plan(org.id, db_session)
-    if not plan_meets_requirement(current_plan, "pro"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin API requires a Pro plan or higher.",
-        )
+    # Enforce pro plan requirement for admin API — only in SaaS mode. Self-hosted
+    # OSS/EE deployments have no billing plan to check against (see
+    # _check_mode_bypass in features_utils/plan_check.py for the same pattern).
+    if get_deployment_mode() == 'saas':
+        current_plan = await get_org_plan(org.id, db_session)
+        if not plan_meets_requirement(current_plan, "pro"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin API requires a Pro plan or higher.",
+            )
     return org
 
 
@@ -178,7 +182,7 @@ async def issue_user_token(
     # default 8-hour session token to limit blast radius if leaked.
     from datetime import timedelta
     access_token = create_access_token(
-        data={"sub": user.email},
+        data={"sub": user.email, "access_level": user.access_level},
         expires_delta=timedelta(hours=1),
     )
     return {
@@ -1188,6 +1192,46 @@ async def get_user_by_email(
     return UserRead.model_validate(row)
 
 
+async def set_user_access_level(
+    token_user: APITokenUser,
+    email: str,
+    access_level: int,
+    db_session: AsyncSession,
+) -> UserRead:
+    """Set a user's access_level within the token's org.
+
+    Used by external billing webhooks (Stripe) to grant or revoke premium
+    access across Quartz/Astro — the value is embedded in the LH_access JWT
+    on the user's next login or token refresh, since both already re-read
+    the user row live from the database.
+    """
+
+    user = (await db_session.execute(
+        select(User)
+        .join(UserOrganization, UserOrganization.user_id == User.id)  # type: ignore
+        .where(
+            User.email == email,
+            UserOrganization.org_id == token_user.org_id,
+        )
+    )).scalars().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found in this organization")
+
+    user.access_level = access_level
+    user.update_date = str(datetime.now())
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+
+    try:
+        from src.routers.users import _invalidate_session_cache
+        _invalidate_session_cache(user.id)
+    except Exception:
+        pass
+
+    return UserRead.model_validate(user)
+
+
 # -- Magic link ---------------------------------------------------------------
 
 
@@ -1346,7 +1390,7 @@ async def consume_magic_link_token(
 
     # Explicitly mark session tokens so get_current_user can reject purpose-bearing
     # tokens that should only be valid at the consume endpoint.
-    access_token = create_access_token(data={"sub": email, "purpose": "session"})
+    access_token = create_access_token(data={"sub": email, "purpose": "session", "access_level": user.access_level})
     refresh_token = create_refresh_token(data={"sub": email, "purpose": "session"})
 
     return user, access_token, refresh_token, redirect_to

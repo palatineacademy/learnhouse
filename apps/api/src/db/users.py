@@ -55,6 +55,7 @@ class UserRead(UserBase):
     last_login_at: Optional[str] = None
     signup_method: Optional[str] = None
     is_superadmin: bool = False
+    access_level: int = 0
 
 
 class UserReadPublic(UserBase):
@@ -139,6 +140,10 @@ class User(UserBase, table=True):
     password_changed_at: Optional[datetime] = Field(default=None)
     creation_date: str = ""
     update_date: str = ""
+    # External access tier, e.g. for Stripe-gated content on Quartz/Astro
+    # (0=public, 1=Athenaeum, 9=admin/VIP). Embedded into the LH_access JWT
+    # at login/refresh so other *.pltn.com.br properties can read it offline.
+    access_level: int = Field(default=0)
 
 
 # Rebuild models to resolve forward references after all classes are defined

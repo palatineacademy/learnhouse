@@ -52,6 +52,7 @@ from src.services.admin.admin import (
     remove_user_from_org_admin,
     reset_user_progress,
     revoke_certificate,
+    set_user_access_level,
     uncomplete_activity,
     unenroll_user,
     update_user_profile,
@@ -232,6 +233,10 @@ class UpdateUserRequest(BaseModel):
     bio: Optional[str] = None
     details: Optional[Dict[str, Any]] = None
     profile: Optional[Dict[str, Any]] = None
+
+
+class SetAccessLevelRequest(BaseModel):
+    access_level: int = Field(ge=0, le=9, description="0=public, 1=Athenaeum (premium), 9=admin/VIP")
 
 
 class ChangeRoleRequest(BaseModel):
@@ -882,6 +887,34 @@ async def api_admin_get_user_by_email(
         )
 
     return await get_user_by_email(token_user, email, db_session)
+
+
+@router.patch(
+    "/{org_slug}/users/by-email/{email}/access-level",
+    response_model=UserRead,
+    summary="Set a user's access level",
+    description=(
+        "Set the access_level field used to gate premium content across Quartz and "
+        "Astro (0=public, 1=Athenaeum, 9=admin/VIP). Intended for billing-system "
+        "webhooks (e.g. Stripe) to grant or revoke access on subscription changes. "
+        "The new value is embedded in the user's LH_access JWT on their next login "
+        "or token refresh."
+    ),
+    responses={
+        200: {"description": "Updated user.", "model": UserRead},
+        404: {"description": "User not found in this organization"},
+    },
+)
+async def api_admin_set_user_access_level(
+    org_slug: str,
+    body: SetAccessLevelRequest,
+    email: str = Path(description="URL-encoded email address"),
+    current_user=Depends(get_current_user),
+    db_session: AsyncSession = Depends(get_db_session),
+) -> UserRead:
+    token_user = _require_api_token(current_user)
+    await _resolve_org_slug(org_slug, token_user, db_session)
+    return await set_user_access_level(token_user, email, body.access_level, db_session)
 
 
 # ── Magic link ───────────────────────────────────────────────────────────────

@@ -557,12 +557,23 @@ class TestResolveOrgSlug:
             assert exc.value.status_code == 403
 
     async def test_rejects_insufficient_plan(self, token_user, org, db):
-        with patch("src.services.admin.admin.get_org_plan", return_value="free"), \
+        # The pro-plan gate only applies in SaaS mode — self-hosted OSS/EE
+        # deployments have no billing plan to check against.
+        with patch("src.services.admin.admin.get_deployment_mode", return_value="saas"), \
+             patch("src.services.admin.admin.get_org_plan", return_value="free"), \
              patch("src.services.admin.admin.plan_meets_requirement", return_value=False):
             with pytest.raises(HTTPException) as exc:
                 await _resolve_org_slug("test-org", token_user, db)
             assert exc.value.status_code == 403
             assert "Pro plan" in exc.value.detail
+
+    async def test_oss_mode_bypasses_plan_check(self, token_user, org, db):
+        """Self-hosted OSS deployments skip the plan check entirely."""
+        with patch("src.services.admin.admin.get_deployment_mode", return_value="oss"), \
+             patch("src.services.admin.admin.get_org_plan", return_value="free"), \
+             patch("src.services.admin.admin.plan_meets_requirement", return_value=False):
+            result = await _resolve_org_slug("test-org", token_user, db)
+        assert result.id == org.id
 
 
 class TestGetUserInOrg:
