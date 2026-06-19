@@ -68,7 +68,7 @@ const EditorLearnHouseLogo = () => {
         animate={animation.animate}
         transition={animation.transition}
       >
-        <Image src="/lrn.svg" alt="LearnHouse" width={14} height={14} className="invert" />
+        <Image src="/palatine-academy-logo.svg" alt="Palatine Academy" width={14} height={14} className="invert" />
       </motion.div>
     </div>
   )

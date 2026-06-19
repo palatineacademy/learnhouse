@@ -48,7 +48,7 @@
       "discord": "Discord",
       "report_feedback": "Reportar problema ou feedback",
       "feedback_title": "Enviar Feedback",
-      "feedback_description": "Ajude-nos a melhorar o LearnHouse compartilhando suas opiniões, reportando bugs ou sugerindo novos recursos.",
+      "feedback_description": "Ajude-nos a melhorar a Palatine Academy compartilhando suas opiniões, reportando bugs ou sugerindo novos recursos.",
       "feedback_placeholder": "Diga-nos o que você está pensando...",
       "feedback_success": "Obrigado pelo seu feedback!",
       "send_feedback": "Enviar Feedback",
@@ -2255,9 +2255,9 @@
         "footer_text_desc": "Texto personalizado exibido na parte inferior das páginas da sua organização",
         "default_language": "Idioma padrão",
         "default_language_desc": "O idioma que novos visitantes veem por padrão e o idioma usado nos e-mails enviados em nome desta organização. Os membros ainda podem alterar o seu próprio idioma de interface.",
-        "watermark_desc": "Mostrar marca d'água LearnHouse nas páginas da organização",
+        "watermark_desc": "Mostrar marca d'água Palatine Academy nas páginas da organização",
         "watermark_free_plan": "A marca d'água é sempre exibida no plano gratuito",
-        "watermark_label": "Marca d'água \"Made with LearnHouse\"",
+        "watermark_label": "Marca d'água \"Made with Palatine Academy\"",
         "watermark_ee": "Oculto pela sua licença Enterprise Edition"
       },
       "images": {
@@ -4610,7 +4610,7 @@
       }
     },
     "welcome": {
-      "title": "Bem-vindo ao LearnHouse",
+      "title": "Bem-vindo à Palatine Academy",
       "subtitle": "Crie cursos, convide alunos e compartilhe conhecimento com o mundo.",
       "get_started": "Começar",
       "features_title": "Tudo o que você precisa",
@@ -4902,7 +4902,7 @@
   "embed": {
     "not_supported_description": "Este tipo de atividade requer autenticação e não pode ser incorporado.",
     "not_supported_title": "Esta atividade não é suportada",
-    "powered_by": "Desenvolvido com LearnHouse",
+    "powered_by": "Desenvolvido com Palatine Academy",
     "visit_activity": "Visitar página da atividade"
   },
   "migration": {

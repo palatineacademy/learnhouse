@@ -245,7 +245,7 @@ export default function CommandPalette() {
                 />
               </div>
               <img
-                src={org?.logo_image ? getOrgLogoMediaDirectory(org.org_uuid, org.logo_image) : '/lrn-dash.svg'}
+                src={org?.logo_image ? getOrgLogoMediaDirectory(org.org_uuid, org.logo_image) : '/palatine-academy-logo.svg'}
                 alt=""
                 aria-hidden="true"
                 draggable={false}

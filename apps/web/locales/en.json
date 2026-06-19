@@ -52,7 +52,7 @@
       "discord": "Discord",
       "report_feedback": "Report Issue or Feedback",
       "feedback_title": "Send Feedback",
-      "feedback_description": "Help us improve LearnHouse by sharing your thoughts, reporting bugs, or suggesting new features.",
+      "feedback_description": "Help us improve Palatine Academy by sharing your thoughts, reporting bugs, or suggesting new features.",
       "feedback_placeholder": "Tell us what's on your mind...",
       "feedback_success": "Thank you for your feedback!",
       "send_feedback": "Send Feedback",
@@ -1227,7 +1227,7 @@
     "not_supported_title": "This activity is not supported",
     "not_supported_description": "This type of activity requires authentication and cannot be embedded.",
     "visit_activity": "Visit Activity Page",
-    "powered_by": "Powered by LearnHouse"
+    "powered_by": "Powered by Palatine Academy"
   },
   "assignments": {
     "submit_assignment": "Submit Assignment",
@@ -2535,8 +2535,8 @@
         "footer_text_desc": "Custom text displayed at the bottom of your organization pages",
         "default_language": "Default Language",
         "default_language_desc": "The language new visitors see by default and the language used for emails sent on behalf of this organization. Members can still switch their own UI language.",
-        "watermark_label": "\"Made with LearnHouse\" watermark",
-        "watermark_desc": "Show the LearnHouse branding watermark on your organization pages",
+        "watermark_label": "\"Made with Palatine Academy\" watermark",
+        "watermark_desc": "Show the Palatine Academy branding watermark on your organization pages",
         "watermark_free_plan": "Watermark is always shown on the free plan",
         "watermark_ee": "Hidden by your Enterprise Edition license"
       },
@@ -4975,7 +4975,7 @@
       }
     },
     "welcome": {
-      "title": "Welcome to LearnHouse",
+      "title": "Welcome to Palatine Academy",
       "subtitle": "Create courses, invite learners and share knowledge with the world.",
       "get_started": "Get Started",
       "features_title": "Everything you need",

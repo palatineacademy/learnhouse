@@ -2,7 +2,7 @@
 import React from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
-import learnhouseIcon from 'public/learnhouse_bigicon_1.png'
+import learnhouseIcon from 'public/palatine-academy-logo.png'
 import { getOrgLogoMediaDirectory, getOrgAuthBackgroundMediaDirectory } from '@services/media/media'
 import { getUriWithOrg } from '@services/config/config'
 import { cn } from '@/lib/utils'
@@ -88,7 +88,7 @@ export default function AuthBrandingPanel({ org, welcomeText }: AuthBrandingPane
                     width={300}
                     height={300}
                     src={learnhouseIcon}
-                    alt="LearnHouse"
+                    alt="Palatine Academy"
                     className="object-contain"
                   />
                 )}

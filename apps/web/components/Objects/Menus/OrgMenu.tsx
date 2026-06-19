@@ -157,7 +157,7 @@ export const OrgMenu = (props: any) => {
                   {org?.logo_image ? (
                     <img
                       src={`${getOrgLogoMediaDirectory(org.org_uuid, org?.logo_image)}`}
-                      alt="Learnhouse"
+                      alt="Palatine Academy"
                       style={{ width: 'auto', height: '100%' }}
                       className="rounded-md"
                     />
@@ -553,12 +553,15 @@ const CopilotMenuButton = ({
 
 const LearnHouseLogo = ({ logoFilter }: { logoFilter: string }) => {
   return (
-    <Image
-      src="/lrn-text.svg"
-      alt="LearnHouse logo"
-      width={133}
-      height={40}
-      style={{ height: 'auto', filter: logoFilter }}
-    />
+    <div className="flex items-center gap-2" style={{ filter: logoFilter }}>
+      <Image
+        src="/palatine-academy-logo.svg"
+        alt="Palatine Academy logo"
+        width={32}
+        height={38}
+        style={{ height: '100%', width: 'auto' }}
+      />
+      <span className="font-semibold text-base whitespace-nowrap">Palatine Academy</span>
+    </div>
   )
 }

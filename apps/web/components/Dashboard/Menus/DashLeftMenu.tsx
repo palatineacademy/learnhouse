@@ -200,8 +200,8 @@ function DashLeftMenu() {
             />
           ) : (
             <img
-              src="/lrn-dash.svg"
-              alt="Learnhouse logo"
+              src="/palatine-academy-logo.svg"
+              alt="Palatine Academy logo"
               className="h-8 w-8"
             />
           )}

@@ -8,7 +8,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const orgslug = await getOrgSlug()
 
   if (!orgslug) {
-    return { title: 'Login — LearnHouse' }
+    return { title: 'Login — Palatine Academy' }
   }
 
   let org: any = null
@@ -22,7 +22,7 @@ export async function generateMetadata(): Promise<Metadata> {
   }
 
   return {
-    title: 'Login' + ` — ${org?.name || 'LearnHouse'}`,
+    title: 'Login' + ` — ${org?.name || 'Palatine Academy'}`,
     robots: { index: false, follow: false },
   }
 }

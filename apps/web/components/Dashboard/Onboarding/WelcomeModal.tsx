@@ -148,8 +148,8 @@ export default function WelcomeModal() {
                 >
                   <div className="px-10 pt-10 pb-2 text-center">
                     <motion.img
-                      src={org?.logo_image ? getOrgLogoMediaDirectory(org.org_uuid, org.logo_image) : '/lrn-dash.svg'}
-                      alt={org?.name || 'LearnHouse'}
+                      src={org?.logo_image ? getOrgLogoMediaDirectory(org.org_uuid, org.logo_image) : '/palatine-academy-logo.svg'}
+                      alt={org?.name || 'Palatine Academy'}
                       className="h-12 w-12 mx-auto mb-5 object-contain"
                       style={org?.logo_image ? undefined : { filter: 'brightness(0)' }}
                       initial={{ opacity: 0, y: 10 }}

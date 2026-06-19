@@ -72,8 +72,8 @@ function HomeClient() {
             <div className="flex flex-col items-center mb-10">
               { }
               <img
-                src="/lrn.svg"
-                alt="LearnHouse"
+                src="/palatine-academy-logo.svg"
+                alt="Palatine Academy"
                 width={44}
                 height={44}
                 className="opacity-90"
@@ -232,15 +232,12 @@ function HomeClient() {
             </div>
 
             {/* Footer */}
-            <a
-              href="https://learnhouse.app"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-10 flex items-center gap-1.5 text-[11px] text-black/30 hover:text-black/60 transition-colors"
+            <span
+              className="mt-10 flex items-center gap-1.5 text-[11px] text-black/30"
             >
               <span>{t('common.powered_by', { defaultValue: 'Powered by' })}</span>
-              <span className="font-semibold tracking-tight text-black/50 group-hover:text-black/70">LearnHouse</span>
-            </a>
+              <span className="font-semibold tracking-tight text-black/50">Palatine Academy</span>
+            </span>
           </div>
         </div>
       </div>
