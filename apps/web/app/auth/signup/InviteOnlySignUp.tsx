@@ -6,7 +6,6 @@ import FormLayout, {
   FormField,
   FormLabelAndMessage,
   Input,
-  Textarea,
 } from '@components/Objects/StyledElements/Form/Form'
 import * as Form from '@radix-ui/react-form'
 import { AlertTriangle, Mail, User } from 'lucide-react'
@@ -240,21 +239,6 @@ function InviteOnlySignUpComponent(props: InviteOnlySignUpProps) {
                 value={formik.values.username}
                 type="text"
                 required
-              />
-            </Form.Control>
-          </FormField>
-
-          <FormField name="bio">
-            <FormLabelAndMessage
-              label={`${t('user.bio')} (${t('common.optional')})`}
-              message={formik.touched.bio ? formik.errors.bio : undefined}
-            />
-            <Form.Control asChild>
-              <Textarea
-                onChange={formik.handleChange}
-                onBlur={formik.handleBlur}
-                value={formik.values.bio}
-                placeholder={t('user.bio_placeholder')}
               />
             </Form.Control>
           </FormField>
