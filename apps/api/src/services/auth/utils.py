@@ -9,8 +9,10 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from src.core.events.database import get_db_session
 from src.db.users import User, UserCreate, UserRead
+from src.db.user_organizations import UserOrganization
 from src.security.auth import get_current_user
 from src.services.users.users import create_user, create_user_without_org
+from src.services.orgs.join import join_org, JoinOrg
 from src.services.security.rate_limiting import get_client_ip
 from src.services.security.account_lockout import update_login_info
 
@@ -188,6 +190,33 @@ async def signWithGoogle(
         db_session.add(user)
         await db_session.commit()
         await db_session.refresh(user)
+
+    # If an org_id was supplied (and already validated by the caller against
+    # the org's join mechanism / invite), join the existing user to that org
+    # if they aren't already a member. New users get this via create_user();
+    # existing users signing in with Google for the first time on this org
+    # previously never joined it.
+    if org_id is not None and user.id is not None:
+        existing_membership = (await db_session.execute(
+            select(UserOrganization).where(
+                UserOrganization.user_id == user.id,
+                UserOrganization.org_id == org_id,
+            )
+        )).scalars().first()
+
+        if not existing_membership:
+            try:
+                await join_org(
+                    request,
+                    JoinOrg(org_id=org_id, user_id=user.id),
+                    current_user,
+                    db_session,
+                )
+            except HTTPException as e:
+                logger.warning(
+                    "Failed to join existing user %s to org_id=%s during Google sign-in: %s",
+                    user.id, org_id, e.detail,
+                )
 
     # Update last login info
     client_ip = get_client_ip(request)
