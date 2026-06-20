@@ -246,6 +246,8 @@
     "create_account": "Criar uma conta",
     "create_account_and_join": "Criar uma conta e Participar",
     "account_created_success": "Sua conta foi criada com sucesso",
+    "account_created_title": "Pronto, agora é só logar",
+    "account_created_subtitle": "Clique em Entrar abaixo para começar",
     "login_to_your_account": "Acesse sua conta",
     "authenticate_to_contribute": "Autentique-se para contribuir",
     "sign_up_to_contribute": "Cadastre-se para contribuir",

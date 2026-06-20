@@ -111,8 +111,12 @@ function OpenSignUpComponent() {
     <div className="m-auto w-full max-w-sm px-6 py-8 sm:py-0">
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">{t('auth.create_account')}</h1>
-        <p className="text-gray-500 mt-1">{t('auth.fill_in_details')}</p>
+        <h1 className="text-2xl font-bold text-gray-900">
+          {message && message.email_verified ? t('auth.account_created_title') : t('auth.create_account')}
+        </h1>
+        <p className="text-gray-500 mt-1">
+          {message && message.email_verified ? t('auth.account_created_subtitle') : t('auth.fill_in_details')}
+        </p>
       </div>
 
       {/* Error/Success Messages */}
