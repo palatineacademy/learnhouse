@@ -33,7 +33,7 @@ export default function BibliotecaPage() {
     <iframe
       src="https://biblioteca.pltn.com.br"
       title="Biblioteca"
-      className="w-full h-[calc(100vh-72px)] border-0"
+      className="w-full h-[calc(100vh-60px)] border-0"
     />
   )
 }
