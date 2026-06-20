@@ -559,7 +559,7 @@ const LearnHouseLogo = ({ logoFilter }: { logoFilter: string }) => {
         alt="Palatine Academy logo"
         width={32}
         height={38}
-        style={{ height: '100%', width: 'auto' }}
+        className="h-full w-auto"
       />
       <span className="font-semibold text-base whitespace-nowrap">Palatine Academy</span>
     </div>

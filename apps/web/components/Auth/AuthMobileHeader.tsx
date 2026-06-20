@@ -2,8 +2,8 @@
 import React from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
-import learnhouseIcon from 'public/palatine-academy-logo.png'
-import { getOrgLogoMediaDirectory, getOrgAuthBackgroundMediaDirectory } from '@services/media/media'
+import palatineBrasao from 'public/palatine-academy-brasao.png'
+import { getOrgAuthBackgroundMediaDirectory } from '@services/media/media'
 import { getUriWithOrg } from '@services/config/config'
 
 interface AuthMobileHeaderProps {
@@ -60,22 +60,14 @@ export default function AuthMobileHeader({ org }: AuthMobileHeaderProps) {
 
       <Link prefetch href={getUriWithOrg(org?.slug, '/')} className="relative z-10">
         <div className="w-10 h-10 rounded-lg ring-1 ring-inset ring-white/10 bg-white flex items-center justify-center overflow-hidden shrink-0">
-          {org?.logo_image ? (
-            <img
-              src={getOrgLogoMediaDirectory(org.org_uuid, org.logo_image)}
-              alt={org.name}
-              className="w-full h-full object-contain p-1.5"
-            />
-          ) : (
-            <Image
-              quality={100}
-              width={40}
-              height={40}
-              src={learnhouseIcon}
-              alt="Palatine Academy"
-              className="object-contain"
-            />
-          )}
+          <Image
+            quality={100}
+            width={40}
+            height={40}
+            src={palatineBrasao}
+            alt="Palatine Academy"
+            className="object-contain"
+          />
         </div>
       </Link>
 

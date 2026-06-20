@@ -2,8 +2,8 @@
 import React from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
-import learnhouseIcon from 'public/palatine-academy-logo.png'
-import { getOrgLogoMediaDirectory, getOrgAuthBackgroundMediaDirectory } from '@services/media/media'
+import palatineBrasao from 'public/palatine-academy-brasao.png'
+import { getOrgAuthBackgroundMediaDirectory } from '@services/media/media'
 import { getUriWithOrg } from '@services/config/config'
 import { cn } from '@/lib/utils'
 
@@ -76,22 +76,14 @@ export default function AuthBrandingPanel({ org, welcomeText }: AuthBrandingPane
             {/* Organization logo */}
             <Link prefetch href={getUriWithOrg(org?.slug, '/')}>
               <div className="w-[300px] h-[300px] flex items-center justify-center">
-                {org?.logo_image ? (
-                  <img
-                    src={getOrgLogoMediaDirectory(org.org_uuid, org.logo_image)}
-                    alt={org.name}
-                    className="w-full h-full object-contain"
-                  />
-                ) : (
-                  <Image
-                    quality={100}
-                    width={300}
-                    height={300}
-                    src={learnhouseIcon}
-                    alt="Palatine Academy"
-                    className="object-contain"
-                  />
-                )}
+                <Image
+                  quality={100}
+                  width={300}
+                  height={300}
+                  src={palatineBrasao}
+                  alt="Palatine Academy"
+                  className="object-contain"
+                />
               </div>
             </Link>
 
