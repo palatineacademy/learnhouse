@@ -244,9 +244,9 @@ export default function GoogleCallbackPage() {
             <Loader2 className="w-12 h-12 text-gray-600 animate-spin" />
           </div>
           <h1 className="text-xl font-semibold text-gray-800 mb-2">
-            Completing sign in...
+            Concluindo o login...
           </h1>
-          <p className="text-gray-500">Please wait while we authenticate you.</p>
+          <p className="text-gray-500">Aguarde enquanto autenticamos você.</p>
         </div>
       </div>
     )

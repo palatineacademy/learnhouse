@@ -455,6 +455,8 @@ async def third_party_login(
     # association (prevents unauthorized org membership via OAuth).
     if org_id is not None:
         from src.db.organizations import Organization
+        from src.services.orgs.orgs import get_org_join_mechanism
+
         org_record = (await db_session.execute(
             select(Organization).where(Organization.id == org_id)
         )).scalars().first()
@@ -465,25 +467,32 @@ async def third_party_login(
                 detail="Invalid org_id",
             )
 
-        # Check that a pending email invite exists for this address in the org
-        _invite_found = False
-        try:
-            _lh_config = get_learnhouse_config()
-            _redis_url = _lh_config.redis_config.redis_connection_string
-            if _redis_url:
-                _r = _redis.Redis.from_url(_redis_url)
-                _invite_key = f"invited_user:{body.email}:org:{org_record.org_uuid}"
-                _invite_found = bool(_r.get(_invite_key))
-        except Exception as e:
-            _logger.error("Redis unavailable for invite validation, org_id will be ignored: %s", e)
+        join_mechanism = await get_org_join_mechanism(
+            request, org_id, current_user, db_session
+        )
 
-        if not _invite_found:
-            _logger.warning(
-                "OAuth org_id=%s supplied for email=%s but no pending invite found; ignoring org_id",
-                org_id,
-                body.email,
-            )
-            org_id = None
+        # Open orgs can be joined directly via OAuth, same as the
+        # email/password signup flow. Invite-only orgs still require a
+        # pending invite to prevent unauthorized org membership via OAuth.
+        if join_mechanism == "inviteOnly":
+            _invite_found = False
+            try:
+                _lh_config = get_learnhouse_config()
+                _redis_url = _lh_config.redis_config.redis_connection_string
+                if _redis_url:
+                    _r = _redis.Redis.from_url(_redis_url)
+                    _invite_key = f"invited_user:{body.email}:org:{org_record.org_uuid}"
+                    _invite_found = bool(_r.get(_invite_key))
+            except Exception as e:
+                _logger.error("Redis unavailable for invite validation, org_id will be ignored: %s", e)
+
+            if not _invite_found:
+                _logger.warning(
+                    "OAuth org_id=%s supplied for email=%s but no pending invite found; ignoring org_id",
+                    org_id,
+                    body.email,
+                )
+                org_id = None
 
     user = None
 
