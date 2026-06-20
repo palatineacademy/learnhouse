@@ -206,7 +206,8 @@
     "no_content_yet": "Aún no hay contenido",
     "other": "Other",
     "disabled": "Disabled",
-    "store": "Store"
+    "store": "Store",
+    "biblioteca": "Biblioteca"
   },
   "banner": {
     "viewing_as_guest": "Estás viendo {{name}} como invitado.",

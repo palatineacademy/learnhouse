@@ -206,7 +206,8 @@
     "no_content_yet": "अभी तक कोई सामग्री नहीं",
     "other": "Other",
     "disabled": "Disabled",
-    "store": "Store"
+    "store": "Store",
+    "biblioteca": "Biblioteca"
   },
   "banner": {
     "viewing_as_guest": "आप {{name}} को अतिथि के रूप में देख रहे हैं।",

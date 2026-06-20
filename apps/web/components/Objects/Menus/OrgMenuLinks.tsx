@@ -1,6 +1,6 @@
 import { useOrg } from '@components/Contexts/OrgContext'
 import { getUriWithOrg } from '@services/config/config'
-import { Books, SquaresFour, ChatsCircle, Headphones, Cube, ShoppingBag } from '@phosphor-icons/react'
+import { Books, SquaresFour, ChatsCircle, Headphones, Cube, ShoppingBag, BookOpenText } from '@phosphor-icons/react'
 import Link from 'next/link'
 import React from 'react'
 import { useTranslation } from 'react-i18next'
@@ -39,6 +39,12 @@ function MenuLinks(props: { orgslug: string; primaryColor?: string }) {
             primaryColor={props.primaryColor}
           ></LinkItem>
         )}
+        <LinkItem
+          link="/biblioteca"
+          type="biblioteca"
+          orgslug={props.orgslug}
+          primaryColor={props.primaryColor}
+        ></LinkItem>
         {showPodcasts && (
           <LinkItem
             link="/podcasts"
@@ -95,6 +101,13 @@ const LinkItem = (props: any) => {
           <>
             <SquaresFour size={20} weight="fill" />{' '}
             <span>{t('collections.collections')}</span>
+          </>
+        )}
+
+        {props.type == 'biblioteca' && (
+          <>
+            <BookOpenText size={20} weight="fill" />{' '}
+            <span>{t('common.biblioteca')}</span>
           </>
         )}
 

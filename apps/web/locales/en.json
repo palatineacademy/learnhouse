@@ -210,7 +210,8 @@
     "no_content_yet": "No content yet",
     "other": "Other",
     "disabled": "Disabled",
-    "store": "Store"
+    "store": "Store",
+    "biblioteca": "Biblioteca"
   },
   "banner": {
     "viewing_as_guest": "You're viewing {{name}} as a guest.",
