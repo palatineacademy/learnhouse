@@ -27,7 +27,6 @@ export async function POST(request: NextRequest) {
     googleAuthUrl.searchParams.set('scope', scope || 'openid email profile')
     googleAuthUrl.searchParams.set('state', state || '')
     googleAuthUrl.searchParams.set('access_type', 'offline')
-    googleAuthUrl.searchParams.set('prompt', 'consent')
 
     return NextResponse.json({ url: googleAuthUrl.toString() })
   } catch (error: any) {
