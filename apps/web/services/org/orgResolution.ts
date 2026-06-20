@@ -19,11 +19,21 @@ export interface OrgResolutionResult {
 /**
  * Read the active tenancy mode on the server side.
  *
- * The middleware writes `LH_tenancy` ('multi' | 'single') on every request.
- * Defaults to 'single' when not present (e.g. error boundaries with no
- * request context).
+ * The middleware sets both the `x-lh-tenancy` request header and the
+ * `LH_tenancy` response cookie on every request. The cookie is only visible
+ * to Server Components on the *next* request (Set-Cookie from a rewrite
+ * isn't readable by `cookies()` during the same request), so the header is
+ * checked first since it's available immediately. Falls back to the cookie,
+ * then 'single' (e.g. error boundaries with no request context).
  */
 async function getServerTenancy(): Promise<'multi' | 'single'> {
+  try {
+    const h = await headers()
+    const headerTenancy = h.get('x-lh-tenancy')
+    if (headerTenancy === 'multi' || headerTenancy === 'single') return headerTenancy
+  } catch {
+    // headers() may throw outside of a request context
+  }
   try {
     const cookieStore = await cookies()
     const t = cookieStore.get('LH_tenancy')?.value
@@ -70,9 +80,18 @@ export async function resolveOrg(searchParams?: { token?: string }): Promise<Org
 
 /**
  * Get just the org slug from available sources (useful for client components).
- * Priority: subdomain (multi only) > LH_org cookie.
+ * Priority: x-lh-org header (current-request, set by middleware) > subdomain
+ * (multi only) > LH_org cookie (previous request).
  */
 export async function getOrgSlug(): Promise<string | null> {
+  try {
+    const h = await headers()
+    const headerOrg = h.get('x-lh-org')
+    if (headerOrg) return headerOrg
+  } catch {
+    // headers() may throw outside of a request context
+  }
+
   const tenancy = await getServerTenancy()
 
   if (tenancy === 'multi') {
