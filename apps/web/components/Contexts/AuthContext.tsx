@@ -481,6 +481,17 @@ export function SessionProvider({
               timestamp: Date.now(),
             }
 
+            // Fetch full session with roles (SSO tokens carry no role info)
+            const fullSession = await fetchUserSession(options.sso_access_token, expiry)
+            if (fullSession) {
+              fullSession.tokens = newSession.tokens
+              setSession(fullSession)
+              sessionCacheRef.current = {
+                data: fullSession,
+                timestamp: Date.now(),
+              }
+            }
+
             // Notify other tabs
             broadcastChannelRef.current?.postMessage({ type: 'LOGIN' })
 
